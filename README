@@ -1,4 +1,5 @@
 Javascript port of Scriptbots (https://sites.google.com/site/scriptbotsevo/)
+Requires a copy of the Sylvester Vector math library (sylvester.js) in the same directory as Life.js and Worker.js
 
 To use:
 
@@ -20,3 +21,4 @@ To use:
 For a list of default parameters see: https://github.com/JimAllanson/lifejs/wiki/Default-Parameters
 For a demonstration, see: http://jimallanson.github.com/lifejs/
 For more information on the simulation, see: https://sites.google.com/site/scriptbotsevo/
+For a copy of the Sylvester library, see: http://sylvester.jcoglan.com/
