@@ -1,12 +1,14 @@
-importScripts('sylvester.js');
 var Life = Life || {};
 
-Life.World = function(parameters){
+/**
+ * Represents a simulation, consisting of a toroidal grid of cells, each of which may contain food, and a set of Agents.
+ * @param parameters A list of parameters, see <a href="https://github.com/JimAllanson/lifejs/wiki/Default-Parameters">a list of defaults here.</a>
+ * @constructor
+ */
+Life.World = function (parameters) {
     var _this = this,
         idCounter = 0,
-        modCounter = 0,
-        ptr = 0,
-        currentEpoch = 0,
+        tick = 0,
         closed = false;
 
     this.agents = new Array();
@@ -18,473 +20,479 @@ Life.World = function(parameters){
     var foodWidth = Math.floor(parameters.width / parameters.cellSize);
     var foodHeight = Math.floor(parameters.height / parameters.cellSize);
 
-    for(var x = 0; x < foodWidth; x++){
+    for (var x = 0; x < foodWidth; x++) {
         _this.food[x] = new Array();
-        for(var y = 0; y < foodHeight; y++){
+        for (var y = 0; y < foodHeight; y++) {
             _this.food[x][y] = 0;
         }
     }
 
-    this.addRandomBots = function(quantity){
-        for(var i = 0; i < quantity; i++){
+    /**
+     * Runs through one tick of the simulation, supplying each agent with inputs, ticking their brains and processing
+     * outputs. Also handles events such as eating, birth and death.
+     */
+    this.update = function () {
+        tick++;
+
+        //Every so often, new food grows in a random cell.
+        if (tick % parameters.foodAddFrequency == 0) {
+            var fx = Math.floor(Math.random() * foodWidth);
+            var fy = Math.floor(Math.random() * foodHeight);
+            _this.food[fx][fy] = parameters.maxFood;
+        }
+
+        for (var id in _this.agents) {
+            _this.agents[id].spiked = false;
+        }
+
+        _this.setInputs();
+        _this.brainsTick();
+        _this.processOutputs();
+
+        for (var id in _this.agents) {
+            var agent = _this.agents[id];
+
+            if (tick % 100 == 0) {
+                agent.age++;
+            }
+
+            //Remove some health each tick as a base survival cost
+            var baseLoss = 0.0002;
+            if (agent.sprinting) {
+                agent.health -= baseLoss * parameters.agent.sprintMultiplier * 1.3;
+            } else {
+                agent.health -= baseLoss;
+            }
+
+            //Subtract health for agents in an uncomfortable temperature
+            var discomfort = Math.pow(Math.abs(2 * Math.abs(agent.pos.x / parameters.width - 0.5) - agent.temperaturePreference), 2);
+            if (discomfort < 0.08) discomfort = 0;
+            agent.health -= parameters.agent.temperatureDiscomfortDamage * discomfort;
+
+            //Indicators shrink each tick
+            if (agent.indicator.size > 0) agent.indicator.size--;
+
+            //Process agents attacked by carnivores
+            if (agent.health <= 0 && agent.spiked) {
+
+                //Babies are less nutritious... (stops parents immediately eating their children).
+                var ageMultiplier = agent.age < 5 ? agent.age * 0.2 : 1;
+
+                //Give some health back to any nearby agents
+                var agentsAround = [];
+                for (var id2 in _this.agents) {
+                    var agent2 = _this.agents[id2];
+                    if (agent.pos.distanceFrom(agent2.pos) < parameters.agent.bodyDecayRadius) {
+                        agentsAround.push(agent2);
+                    }
+                }
+
+                for (var id2 in agentsAround) {
+                    var agent2 = agentsAround[id2];
+                    if (agent2.health > 0) {
+                        if (agent.pos.distanceFrom(agent2.pos) < parameters.agent.bodyDecayRadius) {
+                            agent2.health += 5 * (1 - agent2.herbivore) * (1 - agent2.herbivore) / Math.pow(agentsAround.length, 1.25) * ageMultiplier;
+                            agent2.repCounter -= parameters.agent.bodyFertilityBonus * (1 - agent.herbivore) * (1 - agent.herbivore) / Math.pow(agentsAround.length, 1.25) * ageMultiplier;
+                            if (agent2.health > 2) agent2.health = 2;
+                            agent2.indicator = {
+                                size:30,
+                                red:1,
+                                green:1,
+                                blue:1
+                            };
+                        }
+                    }
+                }
+            }
+
+            //Remove any dead agents from the world
+            if (agent.health <= 0) {
+                _this.agents.splice(id, 1);
+            }
+
+            //Occasionally allow agents to asexually reproduce
+            /*
+            if (agent.repCounter < 0 && agent.health > 0.65 && tick % 15 == 0 && Math.random() < 0.1) {
+                _this.asexuallyReproduce(agent, agent.mutationRate[0], agent.mutationRate[1]);
+                agent.repCounter = agent.herbivore * ((Math.random() * 0.2) + parameters.agent.reproductionRate.herbivore - 0.1)
+                    + (1 - agent.herbivore) * ((Math.random() * 0.2) + parameters.agent.reproductionRate.carnivore - 0.1);
+            }
+            */
+
+            //Periodically breed / create new bots
+            if (!closed) {
+                if (_this.agents.length < parameters.minAgents) {
+                    _this.addRandomBots(1);
+                }
+                if (tick % 100 == 0 && _this.agents.length < parameters.maxAgents) {
+                    //if (Math.random() < 0.5) {
+                    //    _this.addRandomBots(1);
+                    //} else {
+
+                    //Only sexual reproduction is enabled at the moment
+                    _this.sexuallyReproduce();
+                    //}
+                }
+            }
+
+        }
+
+    };
+
+    /**
+     * Calculates values for agent sensors and sets them as input to the brain.
+     */
+    this.setInputs = function () {
+        for (var id in _this.agents) {
+            var agent = _this.agents[id];
+
+            for (var i in agent.eyes) {
+                agent.eyes[i].reset();
+            }
+
+            //Initialise sensor
+            var soundSensor = 0;
+            var smellSensor = 0;
+            var hearingSensor = 0;
+            var bloodSensor = 0;
+
+            for (var id2 in _this.agents) {
+                //For each other agent in the simulation...
+                if (id == id2) continue;
+                var agent2 = _this.agents[id2];
+
+
+                //If the agent is within view distance
+                var viewDistance = parameters.agent.viewDistance;
+                var distance = agent.pos.distanceFrom(agent2.pos);
+                if (distance < viewDistance) {
+                    //Modify smell sound and hearing sensors
+                    smellSensor += (viewDistance - distance) / viewDistance;
+                    soundSensor += (viewDistance - distance) / viewDistance * (Math.max(Math.abs(agent2.wheel1), Math.abs(agent2.wheel2)));
+                    hearingSensor += agent2.soundMultiplier * (viewDistance - distance) / viewDistance;
+
+                    //For each eye
+                    for (var i in agent.eyes) {
+                        agent.eyes[i].look(agent2);
+                    }
+
+                    var angle = agent.pos.angleFromNorth(agent2.pos);
+                    //Blood sensor
+                    var diff = agent.angle - angle;
+                    if (Math.abs(agent.angle) > Math.PI) diff = 2 * Math.PI - Math.abs(agent.angle);
+                    diff = Math.abs(diff);
+                    var PI38 = (Math.PI / 8 / 2) * 3;
+                    if (diff < PI38) {
+                        var mul = ((PI38 - diff) / PI38) * ((viewDistance - distance) / viewDistance);
+                        bloodSensor += mul * (1 - agent2.health / 2);
+                    }
+                }
+            }
+
+            smellSensor *= agent.smellModifier;
+            soundSensor *= agent.soundModifier;
+            hearingSensor *= agent.hearingModifier;
+            bloodSensor *= agent.bloodModifier;
+
+            //Calculate agent's temperature discomfort
+            var discomfort = Math.abs((2 * Math.abs(agent.pos.x / parameters.width - 0.5)) - agent.temperaturePreference);
+
+            //Get food level at the agent's current location
+            var cx = Math.floor(agent.pos.x / parameters.cellSize);
+            var cy = Math.floor(agent.pos.y / parameters.cellSize);
+            var food = _this.food[cx][cy] / parameters.maxFood;
+
+            //Set inputs to agent's brain to sensor values
+            agent.in = [
+                Life.Utils.cap(agent.eyes[0].proximity),
+                Life.Utils.cap(agent.eyes[0].red),
+                Life.Utils.cap(agent.eyes[0].green),
+                Life.Utils.cap(agent.eyes[0].blue),
+
+                food,
+
+                Life.Utils.cap(agent.eyes[1].proximity),
+                Life.Utils.cap(agent.eyes[1].red),
+                Life.Utils.cap(agent.eyes[1].green),
+                Life.Utils.cap(agent.eyes[1].blue),
+
+                Life.Utils.cap(soundSensor),
+                Life.Utils.cap(smellSensor),
+                Life.Utils.cap(agent.health / 2),
+
+                Life.Utils.cap(agent.eyes[2].proximity),
+                Life.Utils.cap(agent.eyes[2].red),
+                Life.Utils.cap(agent.eyes[2].green),
+                Life.Utils.cap(agent.eyes[2].blue),
+
+                Math.abs(Math.sin(tick / agent.clock1)),
+                Math.abs(Math.sin(tick / agent.clock2)),
+                Life.Utils.cap(hearingSensor),
+                Life.Utils.cap(bloodSensor),
+
+                discomfort,
+
+                Life.Utils.cap(agent.eyes[3].proximity),
+                Life.Utils.cap(agent.eyes[3].red),
+                Life.Utils.cap(agent.eyes[3].green),
+                Life.Utils.cap(agent.eyes[3].blue)
+            ];
+        }
+    };
+
+    /**
+     * Takes outputs from agent brain and translates them to agent properties
+     */
+    this.processOutputs = function () {
+        for (var id in _this.agents) {
+            var agent = _this.agents[id];
+
+            //Set agent's colour
+            agent.red = agent.out[2];
+            agent.green = agent.out[3];
+            agent.blue = agent.out[4];
+
+            //Set agent's wheel velocities
+            agent.wheel1 = agent.out[0];
+            agent.wheel2 = agent.out[1];
+
+            //Whether agent is sprinting
+            agent.sprinting = agent.out[6] > 0.5;
+            //Noisyness of agent
+            agent.soundMultiplier = agent.out[7];
+            //Whether agent wants to gift some of its food to others nearby
+            agent.give = agent.out[8];
+
+            //Extend or retract spike
+            if (agent.spikeLength < agent.out[5]) {
+                agent.spikeLength += parameters.agent.spikeSpeed;
+            } else if (agent.spikeLength > agent.out[5]) {
+                agent.spikeLength = agent.out[5];
+            }
+
+
+            //Move bots
+            var v = new Life.Vector(0, parameters.agent.radius / 2);
+            v = v.rotate(agent.angle);
+            var wheel1Position = agent.pos.add(v);
+            var wheel2Position = agent.pos.subtract(v);
+
+            var speed = agent.sprinting ? parameters.agent.speed * parameters.agent.sprintMultiplier : parameters.agent.speed;
+            var wheel1Velocity = speed * agent.wheel1;
+            var wheel2Velocity = speed * agent.wheel2;
+
+            //New position
+            var vv = wheel2Position.subtract(agent.pos);
+            vv = vv.rotate(-wheel1Velocity);
+            agent.pos = wheel2Position.subtract(vv);
+            vv = agent.pos.subtract(wheel1Position);
+            vv = vv.rotate(wheel2Velocity);
+            agent.pos = wheel1Position.add(vv);
+
+            //New angle
+            agent.angle -= wheel1Velocity;
+            if (agent.angle < 0) agent.angle += 2*Math.PI;
+            agent.angle += wheel2Velocity;
+            if (agent.angle > 2*Math.PI) agent.angle -= 2*Math.PI;
+
+            //Handle agents going over edges of the toroid
+            if (agent.pos.x < 0) agent.pos.x = parameters.width + agent.pos.x;
+            if (agent.pos.x >= parameters.width) agent.pos.x = agent.pos.x - parameters.width;
+            if (agent.pos.y < 0) agent.pos.y = parameters.height + agent.pos.y;
+            if (agent.pos.y >= parameters.height) agent.pos.y = agent.pos.y - parameters.height;
+
+
+
+            //Eat as much food as agent can in one tick from current cell
+            var cx = Math.floor(agent.pos.x / parameters.cellSize);
+            var cy = Math.floor(agent.pos.y / parameters.cellSize);
+            var foodHere = _this.food[cx][cy];
+            if (foodHere > 0 && agent.health < 2) {
+                var intake = Math.min(foodHere, parameters.agent.foodIntake);
+                var speedMultiplier = (1 - Math.abs(agent.wheel1) + Math.abs(agent.wheel2) / 2) * 0.7 + 0.3;
+                intake *= agent.herbivore * speedMultiplier;
+                agent.health += intake;
+                agent.bodyFertilityBonus -= 3 * intake;
+                _this.food[cx][cy] -= Math.min(foodHere, parameters.agent.foodWasted);
+            }
+
+            //If the agent wants to give food, give some to any other agents in range
+            if (agent.give > 0.5) {
+                for (var id2 in _this.agents) {
+                    var agent2 = _this.agents[id2];
+                    var distance = Math.sqrt(Math.pow(Math.abs(agent.pos.x - agent2.pos.x),2) + Math.pow(agent.pos.y - agent2.pos.y, 2));
+                    if (distance < parameters.agent.foodTradeDistance) {
+                        if (agent2.health < 2) {
+                            agent2.health += parameters.agent.foodTraded;
+                            agent2.indicator = {
+                                size:14,
+                                red:0,
+                                green:1,
+                                blue:0
+                            };
+                        }
+                        agent.health -= parameters.agent.foodTraded;
+                        agent.indicator = {
+                            size:12,
+                            red:0.6,
+                            green:0.4,
+                            blue:0.2
+                        };
+                    }
+
+                }
+            }
+
+            if (tick % 2 == 0) {
+                //If the agent is a herbivore, has its spike retracted or is moving very slowly, it can't attack
+                if (agent.herbivore > 0.8 || agent.spikeLength < 0.2 || agent.wheel1 < 0.5 || agent.wheel2 < 0.5) continue;
+
+                //Otherwise, get all nearby agents
+                for (var id2 in _this.agents) {
+                    var agent2 = _this.agents[id2];
+                    if (agent == agent2) continue;
+                    var distance = Math.sqrt(Math.pow(Math.abs(agent.pos.x - agent2.pos.x),2) + Math.pow(agent.pos.y - agent2.pos.y, 2));
+
+                    //Agent is within stabbing range
+                    if (distance < parameters.agent.radius * 2) {
+                        //var v = $V([1, 0]);
+                        //v = v.rotate(agent.angle, [0, 0]);
+                        //var diff = v.angleFrom(agent2.pos.subtract(agent.pos));
+                        var diff = Math.abs(Math.atan2(agent2.pos.y - agent.pos.y, agent2.pos.x - agent.pos.x));
+                        if (Math.abs(diff) < Math.PI / 8) {
+                            var speedMultiplier = agent.sprinting ? parameters.agent.sprintMultiplier : 1;
+                            var damage = parameters.agent.spikeStrength * agent.spikeLength * Math.max(Math.abs(agent.wheel1), Math.abs(agent.wheel2)) * parameters.agent.sprintMultiplier;
+                            agent2.health -= damage;
+
+                            if (agent.health > 2) agent.health = 2;
+                            agent.spikeLength = 0;
+
+                            agent.indicator = {
+                                size:40 * damage,
+                                red:1,
+                                green:1,
+                                blue:0
+                            };
+
+                            //var v2 = $V([1, 0]);
+                            //v2 = v2.rotate(agent2.angle, [0, 0]);
+                            //var adiff = v.angleFrom(v2);
+                            if (Math.abs(agent2.angle - agent.angle) < Math.PI / 2) {
+                                agent2.spikeLength = 0;
+                            }
+                            agent2.spiked = true;
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    /**
+     * Tick each agent's brain
+     */
+    this.brainsTick = function () {
+        for (var id in _this.agents) {
+            var agent = _this.agents[id];
+            agent.tick();
+        }
+    };
+
+
+    this.addCarnivore = function () {
+        var agent = new Life.Agent(parameters);
+        agent.id = idCounter;
+        idCounter++;
+        agent.herbivore = Math.random() / 10;
+        _this.agents.push(agent);
+    };
+
+    this.addHerbivore = function () {
+        var agent = new Life.Agent(parameters);
+        agent.id = idCounter;
+        idCounter++;
+        agent.herbivore = Math.random() / 10 + 0.9;
+        _this.agents.push(agent);
+    };
+
+    /**
+     * Takes the two oldest agents and crosses them, producing a number of new agents (as defined by agent's babies parameter)
+     */
+    this.sexuallyReproduce = function () {
+        var i1 = Math.floor(Math.random() * _this.agents.length);
+        var i2 = Math.floor(Math.random() * _this.agents.length);
+        for (var i = 0; i < _this.agents.length; i++) {
+            if (_this.agents[i].age > _this.agents[i1].age && Math.random() < 0.1) i1 = i;
+            if (_this.agents[i].age > _this.agents[i2].age && Math.random() < 0.1 && i != i1) i2 = i;
+        }
+        for (var i = 0; i < parameters.agent.babies; i++) {
+            var newAgent = _this.agents[i1].crossover(_this.agents[i2]);
+            newAgent.id = idCounter;
+            idCounter++;
+            _this.agents.push(newAgent);
+        }
+    };
+
+    /**
+     * Produces a a clone of this agent, with some random mutations.
+     * @param agent Agent to clone.
+     */
+    this.asexuallyReproduce = function (agent) {
+
+        agent.indicator = {
+            size:30,
+            red:0,
+            green:0.8,
+            blue:0
+        };
+
+        for (var i = 0; i < parameters.agent.babies; i++) {
+            var agent2 = agent.asexuallyReproduce();
+            agent2.id = idCounter;
+            idCounter++;
+            _this.agents.push(agent2);
+        }
+    };
+
+    /**
+     * Produces a number of random agents
+     * @param quantity number of agents to produce
+     */
+    this.addRandomBots = function (quantity) {
+        for (var i = 0; i < quantity; i++) {
             var agent = new Life.Agent(parameters);
             agent.id = idCounter;
             idCounter++;
             _this.agents.push(agent);
         }
-    },
+    };
 
-        this.update = function(){
-            modCounter++;
-
-            for(var id in _this.agents){
-                var agent = _this.agents[id];
-                if(modCounter % 100 == 0){
-                    agent.age++;
-                }
-                agent.spiked = false;
+    /**
+     * Return an array containing the number of herbivores and carnivores in the current simulation
+     * @return {Array} Number of herbivores [0] and carnivores [1]
+     */
+    this.numHerbivoresCarnivores = function () {
+        var h = 0, c = 0;
+        for (var id in _this.agents) {
+            var agent = _this.agents[id];
+            if (agent.herbivore > 0.5) {
+                h++;
+            } else {
+                c++;
             }
-
-            if(modCounter % 1000){
-                var herbCarn = _this.numHerbivoresCarnivores();
-                numHerbivore[ptr] = herbCarn[0];
-                numCarnivore[ptr] = herbCarn[1];
-                ptr++;
-                if(ptr == numHerbivore.length) ptr = 0;
-            }
-
-            if(modCounter >= 10000){
-                modCounter = 0;
-                currentEpoch++;
-            }
-            if(modCounter % parameters.foodAddFrequency == 0){
-                var fx = Math.floor(Math.random() * foodWidth);
-                var fy = Math.floor(Math.random() * foodHeight);
-                _this.food[fx][fy] = parameters.maxFood;
-            }
-
-            _this.setInputs();
-            _this.brainsTick();
-            _this.processOutputs();
-
-            for(var id in _this.agents){
-                var agent = _this.agents[id];
-
-                var baseLoss = 0.0002;
-                if(agent.sprinting){
-                    agent.health -= baseLoss * parameters.agent.sprintMultiplier * 1.3;
-                }else{
-                    agent.health -= baseLoss;
-                }
-
-                var dd = 2 * Math.abs(agent.pos.elements[0]/parameters.width - 0.5);
-                var discomfort = Math.abs(dd-agent.temperaturePreference);
-                discomfort *= discomfort;
-                if(discomfort < 0.08) discomfort = 0;
-                agent.health -= parameters.agent.temperatureDiscomfortDamage * discomfort;
-
-                if(agent.indicator.size > 0) agent.indicator.size--;
-
-                if(agent.health <= 0 && agent.spiked){
-                    var numAround = 0;
-                    for(var id2 in _this.agents){
-                        var agent2 = _this.agents[id2];
-                        if(agent2.health > 0){
-                            var d = agent.pos.subtract(agent2.pos).length;
-                            if(d < parameters.agent.bodyDecayRadius){
-                                numAround++;
-                            }
-                        }
-                    }
-
-                    var ageMultiplier = 1;
-                    if(agent.age < 5) ageMultiplier = agent.age * 0.2;
-
-                    if(numAround > 0){
-                        for(var id2 in _this.agents){
-                            var agent2 = _this.agents[id2];
-                            if(agent2.health > 0){
-                                var d = agent.pos.subtract(agent2.pos).length;
-                                if(d < parameters.agent.bodyDecayRadius){
-                                    agent2.health += 5*(1-agent2.herbivore)*(1-agent2.herbivore)/Math.pow(numAround,1.25)*ageMultiplier;
-                                    agent2.repCounter -= parameters.agent.bodyFertilityBonus * (1-agent.herbivore) * (1-agent.herbivore) / Math.pow(numAround,1.25)*ageMultiplier;
-                                    if(agent2.health > 2) agent2.health = 2;
-                                    agent2.indicator = {
-                                        size:30,
-                                        red:1,
-                                        green:1,
-                                        blue:1
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if(agent.health <= 0){
-                    _this.agents.splice(id, 1);
-                }
-
-                if(agent.repCounter < 0 && agent.health > 0.65 && modCounter %15 == 0 && Math.random() < 0.1){
-                    _this.asexuallyReproduce(agent, agent.mutationRate[0], agent.mutationRate[1]);
-                    agent.repCounter = agent.herbivore * ((Math.random() * 0.2) + parameters.agent.reproductionRate.herbivore - 0.1)
-                        + (1-agent.herbivore) * ((Math.random() * 0.2) + parameters.agent.reproductionRate.carnivore - 0.1);
-                }
-
-                if(!closed){
-                    if(_this.agents.length < parameters.minAgents){
-                        _this.addRandomBots(1);
-                    }
-                    if(modCounter%100 == 0 && _this.agents.length < parameters.maxAgents){
-                        if(Math.random() < 0.5){
-                            _this.addRandomBots(1);
-                        }else{
-                            _this.sexuallyReproduce();
-                        }
-                    }
-                }
-
-            }
-
-        },
-
-        this.setInputs = function(){
-            for(var id in _this.agents){
-                var agent = _this.agents[id];
-
-                //Eyes
-                var p = [0,0,0,0];
-                var r = [0,0,0,0];
-                var g = [0,0,0,0];
-                var b = [0,0,0,0];
-
-                var soundAccum = 0;
-                var smellAccum = 0;
-                var hearingAccum = 0;
-
-                var blood = 0;
-
-                for(var id2 in _this.agents){
-                    if(id == id2) continue;
-                    var agent2 = _this.agents[id2];
-
-                    var dist = parameters.distance;
-                    if(agent.x<agent2.x-dist || agent.x>agent2.x+dist || agent.y>agent2.y+dist || agent.y<agent2.y-dist) continue;
-
-                    var d = agent.pos.distanceFrom(agent2);
-                    if(d< dist){
-                        smellAccum += (dist - d)/dist;
-                        soundAccum += (dist - d)/dist*(Math.max(Math.abs(agent2.wheel1),Math.abs(agent2.wheel2)));
-                        hearingAccum += agent2.soundMultiplier*(dist-d)/dist;
-
-                        var angle = agent2.pos.angleFrom(agent);
-
-                        for(var eye = 0; eye < parameters.agent.numberEyes; eye++){
-                            var aa = agent.angle + agent.eyeDir[eye];
-                            if(aa < -Math.PI) aa += 2*Math.PI;
-                            if(aa > Math.PI) aa -= 2* Math.PI;
-
-                            var diff = aa - angle;
-                            if(Math.abs(diff) > Math.PI) diff = 2 * Math.PI - Math.abs(diff);
-                            diff = Math.abs(diff);
-
-                            var fov = agent.eyeFov[eye];
-                            if(diff < fov){
-                                var mul = agent.eyeSenseModifier * (Math.abs(fov-dist)/fov) * ((dist - d)/dist);
-                                p[eye] += mul * (d/dist);
-                                r[eye] += mul * agent2.red;
-                                g[eye] += mul * agent2.green;
-                                b[eye] += mul * agent2.blue;
-                            }
-                        }
-
-                        //Blood sensor
-                        var forwardAngle = agent.angle;
-                        var diff = forwardAngle - angle;
-                        if(Math.abs(forwardAngle) > Math.PI) diff = 2* Math.PI - Math.abs(forwardAngle);
-                        diff = Math.abs(diff);
-                        var PI38 = (Math.PI /8 /2) * 3;
-                        if(diff < PI38){
-                            var mul = ((PI38-diff)/PI38)*((dist-d)/dist);
-                            blood += mul * (1-agent2.health/2);
-                        }
-                    }
-                }
-
-                smellAccum *= agent.smellModifier;
-                soundAccum *= agent.soundModifier;
-                hearingAccum *= agent.hearingModifier;
-                blood *= agent.bloodModifier;
-
-                var discomfort = Math.abs((2*Math.abs(agent.pos.elements[0] / parameters.width - 0.5)) - agent.temperaturePreference);
-                var cx = Math.floor(agent.pos.elements[0]/parameters.cellSize);
-                var cy = Math.floor(agent.pos.elements[1]/parameters.cellSize);
-                var food = _this.food[cx][cy]/parameters.maxFood;
-
-
-                agent.in = [
-                    Life.Utils.cap(p[0]),
-                    Life.Utils.cap(r[0]),
-                    Life.Utils.cap(g[0]),
-                    Life.Utils.cap(b[0]),
-
-                    food,
-
-                    Life.Utils.cap(p[1]),
-                    Life.Utils.cap(r[1]),
-                    Life.Utils.cap(g[1]),
-                    Life.Utils.cap(b[1]),
-
-                    Life.Utils.cap(soundAccum),
-                    Life.Utils.cap(smellAccum),
-                    Life.Utils.cap(agent.health / 2),
-
-                    Life.Utils.cap(p[2]),
-                    Life.Utils.cap(r[2]),
-                    Life.Utils.cap(g[2]),
-                    Life.Utils.cap(b[2]),
-
-                    Math.abs(Math.sin(modCounter/agent.clock1)),
-                    Math.abs(Math.sin(modCounter/agent.clock2)),
-                    Life.Utils.cap(hearingAccum),
-                    Life.Utils.cap(blood),
-
-                    discomfort,
-
-                    Life.Utils.cap(p[3]),
-                    Life.Utils.cap(r[3]),
-                    Life.Utils.cap(g[3]),
-                    Life.Utils.cap(b[3])
-
-
-                ];
-            }
-        },
-
-        this.processOutputs = function(){
-            for(var id in _this.agents){
-                var agent = _this.agents[id];
-
-                agent.red = agent.out[2];
-                agent.green = agent.out[3];
-                agent.blue = agent.out[4];
-                agent.wheel1 = agent.out[0];
-                agent.wheel2 = agent.out[1];
-
-                agent.sprinting = agent.out[6] > 0.5;
-                agent.soundMultiplier = agent.out[7];
-                agent.give = agent.out[8];
-
-                var g = agent.out[5];
-                if(agent.spikeLength < g){
-                    agent.spikeLength += parameters.agent.spikeSpeed;
-                }else if(agent.spikeLength > g){
-                    agent.spikeLength = g;
-                }
-
-
-                //Move bots
-                //$V is Sylvester vector library, Create a point on the diameter of bot
-                var v = $V([parameters.agent.size / 2, 0]);
-                v = v.rotate(agent.angle + Math.PI / 2, [0,0]);
-
-                var wheel1Position = agent.pos.add(v);
-                var wheel2Position = agent.pos.subtract(v);
-
-                var BW1 = parameters.agent.speed * agent.wheel1;
-                var BW2 = parameters.agent.speed * agent.wheel2;
-                if(agent.sprinting){
-                    BW1 *= parameters.agent.sprintMultiplier;
-                    BW2 *= parameters.agent.sprintMultiplier;
-                }
-
-                var vv = wheel2Position.subtract(agent.pos);
-                vv = vv.rotate(-BW1, [0,0]);
-                agent.pos = wheel2Position.subtract(vv);
-
-                agent.angle -= BW1;
-                if(agent.angle < Math.PI) agent.angle = Math.PI - (-Math.PI-agent.angle);
-                vv = agent.pos.subtract(wheel1Position);
-                vv = vv.rotate(BW2, [0,0]);
-                agent.pos = wheel1Position.add(vv);
-                agent.angle += BW2;
-                if(agent.angle > Math.PI) agent.angle = -Math.PI + (agent.angle - Math.PI);
-
-                if(agent.pos.elements[0] < 0) agent.pos.elements[0] = parameters.width + agent.pos.elements[0];
-                if(agent.pos.elements[0] >= parameters.width) agent.pos.elements[0] = agent.pos.elements[0] - parameters.width;
-                if(agent.pos.elements[1] < 0) agent.pos.elements[1] = parameters.height + agent.pos.elements[1];
-                if(agent.pos.elements[1] >= parameters.height) agent.pos.elements[1] = agent.pos.elements[1] - parameters.height;
-
-                //Herbivores food intake
-                var cx = Math.floor(agent.pos.elements[0]/parameters.cellSize);
-                var cy = Math.floor(agent.pos.elements[1]/parameters.cellSize);
-                var foodHere = _this.food[cx][cy];
-                if(foodHere > 0 && agent.health < 2){
-                    var intake = Math.min(foodHere, parameters.agent.foodIntake);
-                    var speedMultiplier = (1-Math.abs(agent.wheel1)+Math.abs(agent.wheel2)/2)*0.7 + 0.3;
-                    intake *= agent.herbivore * speedMultiplier;
-                    agent.health += intake;
-                    agent.bodyFertilityBonus -= 3*intake;
-                    _this.food[cx][cy] -= Math.min(foodHere, parameters.agent.foodWasted);
-                }
-
-                //Gifting of food
-                agent.foodSupply = 0;
-                if(agent.give > 0.5){
-                    for(var id2 in _this.agents){
-                        var agent2 = _this.agents[id2];
-                        var d = agent.pos.distanceFrom(agent2.pos);
-                        if(d < parameters.agent.foodTradeDistance){
-                            if(agent2.health < 2) agent2.health += parameters.agent.foodTraded;
-                            agent.health -= parameters.agent.foodTraded;
-                            agent2.foodSupply += parameters.agent.foodTraded;
-                            agent.foodSupply -= parameters.agent.foodTraded;
-                        }
-
-                    }
-                }
-
-                if(modCounter % 2 == 0){
-                    //Carnivores only
-                    if(agent.herbivore > 0.8 || agent.spikeLength < 0.2 || agent.wheel1 < 0.5 || agent.wheel2 <0.5) continue;
-                    for(var id2 in _this.agents){
-                        var agent2 = _this.agents[id2];
-                        if(agent == agent2) continue;
-                        var d = agent.pos.distanceFrom(agent2.pos);
-                        if(d<parameters.agent.size){
-                            var v = $V([1,0]);
-                            v.rotate(agent.angle, [0,0]);
-                            var diff = v.angleFrom(agent2.pos.subtract(agent.pos));
-                            if(Math.abs(diff) < Math.PI/8){
-                                var speedMultiplier = 1;
-                                if(agent.boost) speedMultiplier = parameters.agent.sprintMultiplier;
-                                var damage = parameters.agent.spikeStrength * agent.spikeLength * Math.max(Math.abs(agent.wheel1),Math.abs(agent.wheel2))*parameters.agent.sprintMultiplier;
-                                agent2.health -= damage;
-
-                                if(agent.health>2) agent.health = 2;
-                                agent.spikeLength = 0;
-
-                                agent.indicator = {
-                                    size:40*damage,
-                                    red:1,
-                                    green:1,
-                                    blue:0
-                                };
-
-                                var v2 = $V([1,0]);
-                                v2.rotate(agent2.angle, [0,0]);
-                                var adiff = v.angleFrom(v2);
-                                if(Math.abs(adiff)<Math.PI/2)
-                                {
-                                    agent2.spikeLength = 0;
-                                }
-                                agent2.spiked = true;
-                            }
-                        }
-
-                    }
-
-                }
-
-
-            }
-
-        },
-
-        this.brainsTick = function(){
-            for(var id in _this.agents){
-                var agent = _this.agents[id];
-                agent.tick();
-            }
-        },
-
-
-
-        this.addCarnivore = function(){
-            var agent = new Life.Agent(parameters);
-            agent.id = idCounter;
-            idCounter++;
-            agent.herbivore = Math.random()/10;
-            _this.agents.push(agent);
-        },
-
-        this.addHerbivore = function(){
-            var agent = new Life.Agent(parameters);
-            agent.id = idCounter;
-            idCounter++;
-            agent.herbivore = Math.random()/10 + 0.9;
-            _this.agents.push(agent);
-        },
-
-        this.sexuallyReproduce = function(){
-            var i1 = Math.floor(Math.random() * _this.agents.length);
-            var i2 = Math.floor(Math.random() * _this.agents.length);
-            for(var i = 0; i < _this.agents.length; i++){
-                if(_this.agents[i].age > _this.agents[i1].age && Math.random() < 0.1) i1 = i;
-                if(_this.agents[i].age > _this.agents[i2].age && Math.random() < 0.1 && i!=i1) i2 = i;
-            }
-            var newAgent = _this.agents[i1].crossover(_this.agents[i2]);
-            newAgent.id = idCounter;
-            idCounter++;
-            _this.agents.push(newAgent);
-        },
-
-        this.asexuallyReproduce = function(agent, mutationRate1, mutationRate2){
-            if(Math.random()<0.04) mutationRate1 *= Math.random() * 10;
-            if(Math.random()<0.04) mutationRate2 *= Math.random() * 10;
-
-            agent.indicator = {
-                size:30,
-                red:0,
-                green:0.8,
-                blue:0
-            };
-
-            for(var i =0; i < parameters.agent.babies; i++){
-                var agent2 = agent.reproduce(mutationRate1, mutationRate2);
-                agent2.id = idCounter;
-                idCounter++;
-                _this.agents.push(agent2);
-            }
-        },
-
-
-        this.draw = function(view, drawFood){
-
-            if(drawFood){
-                for(var x = 0; x < foodWidth; x++){
-                    for(var y = 0; y < foodWidth; y++){
-                        var f = 0.5 * _this.food[x][y]/parameters.maxFood;
-                        view.drawFood(x,y,f);
-                    }
-                }
-            }
-
-            for(var id in _this.agents){
-                view.renderAgent(_this.agents[id]);
-            }
-            //view.drawMisc();
-        },
-
-        this.numHerbivoresCarnivores = function(){
-            var h = 0, c = 0;
-            for(var id in _this.agents){
-                var agent = _this.agents[id];
-                if(agent.herbivore > 0.5){
-                    h++;
-                }else{
-                    c++;
-                }
-                return [h,c];
-            }
-        },
-
-        _this.addRandomBots(parameters.minAgents);
+            return [h, c];
+        }
+    };
+
+    _this.addRandomBots(parameters.maxAgents);
 };
 
-
-
-Life.Agent = function(parameters){
+/**
+ * An agent operating within the simulation, consisting of a number of sensors, effectors, a brain and the ability to reproduce
+ * @param parameters  A list of parameters, see <a href="https://github.com/JimAllanson/lifejs/wiki/Default-Parameters">a list of defaults here.</a>
+ * @constructor
+ */
+Life.Agent = function (parameters) {
 
     //Initial position and angle
     var _x = Math.floor(Math.random() * parameters.width),
@@ -495,8 +503,8 @@ Life.Agent = function(parameters){
 
     this.id = 0;
     this.age = 0;
-    this.pos = $V([_x, _y]);
-    this.angle = (2 * Math.random() * Math.PI) - Math.PI;
+    this.pos = new Life.Vector(_x, _y);
+    this.angle = Math.random() * 2*Math.PI;
 
     this.spikeLength = 0;
     this.spiked = false;
@@ -524,7 +532,6 @@ Life.Agent = function(parameters){
 
     this.sprinting = false;
     this.give = 0;
-    this.foodSupply = 0;
     this.herbivore = Math.random();
     this.health = Math.random() * 0.1 + 1;
 
@@ -532,12 +539,12 @@ Life.Agent = function(parameters){
 
     this.in = new Array();
     this.out = new Array();
-    for(var i = 0; i < parameters.brain.outputSize; i++){
+    for (var i = 0; i < parameters.brain.outputSize; i++) {
         _this.out[i] = 0;
     }
 
-    this.repCounter = this.herbivore * ((Math.random() * 0.2) + parameters.agent.reproductionRate.herbivore - 0.1)
-        + (1-this.herbivore) * ((Math.random() * 0.2) + parameters.agent.reproductionRate.herbivore - 0.1);
+    this.repCounter = _this.herbivore * ((Math.random() * 0.2) + parameters.agent.reproductionRate.herbivore - 0.1)
+        + (1 - _this.herbivore) * ((Math.random() * 0.2) + parameters.agent.reproductionRate.herbivore - 0.1);
 
 
     this.smellModifier = Math.random() * 0.4 + 0.1;
@@ -547,14 +554,15 @@ Life.Agent = function(parameters){
     this.bloodModifier = Math.random() * 2 + 1;
 
 
-    //Initial eye properties
-    this.eyeFov = new Array();
-    this.eyeDir = new Array();
-    for(var i = 0; i < 4; i++){
-        this.eyeFov[i] = Math.random() * 1.5 + 0.5;
-        this.eyeDir[i] = Math.random() * Math.PI * 2;
+    this.eyes = [];
+    for (var i = 0; i < parameters.agent.numberEyes; i++) {
+        var eye = new Life.Agent.Eye(_this);
+        eye.fov = Math.random() * 1.5 + 0.5;
+        eye.dir = Math.random() * Math.PI * 2;
+        _this.eyes.push(eye);
     }
 
+    this.viewDistance = parameters.agent.viewDistance;
 
     //Event indication
     this.indicator = {
@@ -564,110 +572,180 @@ Life.Agent = function(parameters){
         blue:0
     };
 
-    this.brain = new Life.Brain(parameters);
+    this.brain = new Life.Brain(parameters, _this.in, _this.out);
 
-    this.tick = function(){
-        if(_this.id == 0){
-            //console.log(_this.id, _this.in, _this.out);
-        }
+    /**
+     * Performs a single tick of the agents brain, processing the current inputs into a set of outputs.
+     */
+    this.tick = function () {
         _this.brain.tick(_this.in, _this.out);
-    },
+    };
 
-        this.asexuallyReproduce = function(mutationRate1, mutationRate2){
-            //Create a new agent
-            var agent = new Life.Agent(parameters);
+    /**
+     * Produces a clone of this agent, with random mutations.
+     * @return {Life.Agent} A mutated clone of the current agent
+     */
+    this.asexuallyReproduce = function () {
+        //Create a new agent
+        var agent = new Life.Agent(parameters);
 
-            //Place it behind its parent
-            var fb = $V([parameters.agent.size/2,0]);
-            fb.rotate(-agent.angle);
-            agent.pos = _this.pos.add(fb).add($V([Math.random() * parameters.agent.size - parameters.agent.size, Math.random() * parameters.agent.size - parameters.agent.size]));
-            if(agent.pos.elements[0] < 0) agent.pos.elements[0] = parameters.width + agent.pos.elements[0];
-            if(agent.pos.elements[0] > parameters.width) agent.pos.elements[0] = agent.pos.elements[0] - parameters.width;
-            if(agent.pos.elements[1] < 0) agent.pos.elements[1] = parameters.height + agent.pos.elements[1];
-            if(agent.pos.elements[1] > parameters.height) agent.pos.elements[1] = agent.pos.elements[1] - parameters.height;
+        //Place it behind its parent
+        var fb = new Life.Vector(parameters.agent.radius / 2, 0);
+        fb = fb.rotate(-agent.angle);
+        agent.pos = _this.pos.add(fb).add(new Life.Vector(Math.random() * parameters.agent.radius - parameters.agent.radius, Math.random() * parameters.agent.radius - parameters.agent.radius));
 
-            //Assign generation number and nutrient value for body
-            agent.generationCount = _this.generationCount+1;
-            agent.repCounter = agent.herbivore * ((Math.random() * 0.2) + parameters.agent.reproductionRate.herbivore - 0.1)
-                + (1-agent.herbivore) * ((Math.random() * 0.2) + parameters.agent.reproductionRate.carnivore - 0.1);
+        //Handle agents going over edges of the toroid
+        if (agent.pos.x < 0) agent.pos.x = parameters.width + agent.pos.x;
+        if (agent.pos.x >= parameters.width) agent.pos.x = agent.pos.x - parameters.width;
+        if (agent.pos.y < 0) agent.pos.y = parameters.height + agent.pos.y;
+        if (agent.pos.y >= parameters.height) agent.pos.y = agent.pos.y - parameters.height;
 
-            //Copy mutation rate from parent, randomised using normal distribution with sigma value from parameters
-            agent.mutationRate = _this.mutationRate;
-            if(Math.random() < 0.1) agent.mutationRate[0] = Life.Utils.randomNormal(_this.mutationRate[0], parameters.mutationRate[0]);
-            if(Math.random() < 0.1) agent.mutationRate[1] = Life.Utils.randomNormal(_this.mutationRate[1], parameters.mutationRate[1]);
-            if(_this.mutationRate[0] < 0.001) _this.mutationRate[0] = 0.001;
-            if(_this.mutationRate[1] < 0.02) _this.mutationRate[1] = 0.02;
+        //Assign generation number and nutrient value for body
+        agent.generationCount = _this.generationCount + 1;
+        agent.repCounter = agent.herbivore * ((Math.random() * 0.2) + parameters.agent.reproductionRate.herbivore - 0.1)
+            + (1 - agent.herbivore) * ((Math.random() * 0.2) + parameters.agent.reproductionRate.carnivore - 0.1);
 
-            //Randomise food preference and body clocks from parent's values and mutation rate
-            agent.herbivore = Life.Utils.cap(Life.Utils.randomNormal(_this.herbivore, 0.03));
-            if(Math.random() < mutationRate1 * 5) agent.clock1 = Life.Utils.randomNormal(agent.clock1, mutationRate2);
-            if(agent.clock1 < 2) agent.clock1 = 2;
-            if(Math.random() < mutationRate1 * 5) agent.clock2 = Life.Utils.randomNormal(agent.clock2, mutationRate2);
-            if(agent.clock2 < 2) agent.clock2 = 2;
+        //Copy mutation rate from parent, randomised using normal distribution with sigma value from parameters
+        agent.mutationRate = _this.mutationRate;
+        if (Math.random() < 0.1) agent.mutationRate[0] = Life.Utils.randomNormal(_this.mutationRate[0], parameters.mutationRate[0]);
+        if (Math.random() < 0.1) agent.mutationRate[1] = Life.Utils.randomNormal(_this.mutationRate[1], parameters.mutationRate[1]);
+        if (_this.mutationRate[0] < 0.001) _this.mutationRate[0] = 0.001;
+        if (_this.mutationRate[1] < 0.02) _this.mutationRate[1] = 0.02;
 
-            //Copy senses from parent
-            agent.smellModifier = _this.smellModifier;
-            agent.soundModifier = _this.soundModifier;
-            agent.hearingModifier = _this.hearingModifier;
-            agent.eyeSenseModifier = _this.eyeSenseModifier;
-            agent.bloodModifier = _this.bloodModifier;
+        //Randomise food preference and body clocks from parent's values and mutation rate
+        agent.herbivore = Life.Utils.cap(Life.Utils.randomNormal(_this.herbivore, 0.03));
+        if (Math.random() < _this.mutationRate[0] * 5) agent.clock1 = Life.Utils.randomNormal(agent.clock1, _this.mutationRate[1]);
+        if (agent.clock1 < 2) agent.clock1 = 2;
+        if (Math.random() < _this.mutationRate[0] * 5) agent.clock2 = Life.Utils.randomNormal(agent.clock2, _this.mutationRate[1]);
+        if (agent.clock2 < 2) agent.clock2 = 2;
 
-            //Mutate senses
-            if(Math.random() < mutationRate1 * 5) agent.smellModifier = Life.Utils.randomNormal(agent.smellModifier, mutationRate2);
-            if(Math.random() < mutationRate1 * 5) agent.soundModifier = Life.Utils.randomNormal(agent.soundModifier, mutationRate2);
-            if(Math.random() < mutationRate1 * 5) agent.hearingModifier = Life.Utils.randomNormal(agent.hearingModifier, mutationRate2);
-            if(Math.random() < mutationRate1 * 5) agent.eyeSenseModifier = Life.Utils.randomNormal(agent.eyeSenseModifier, mutationRate2);
-            if(Math.random() < mutationRate1 * 5) agent.bloodModifier = Life.Utils.randomNormal(agent.bloodModifier, mutationRate2);
+        //Copy senses from parent
+        agent.smellModifier = _this.smellModifier;
+        agent.soundModifier = _this.soundModifier;
+        agent.hearingModifier = _this.hearingModifier;
+        agent.eyeSenseModifier = _this.eyeSenseModifier;
+        agent.bloodModifier = _this.bloodModifier;
 
-            //Copy and mutate eyes
-            agent.eyeFov = _this.eyeFov;
-            agent.eyeDir = _this.eyeDir;
-            for(var i = 0; i < parameters.agent.numberEyes; i++){
-                if(Math.random() < mutationRate1 * 5) agent.eyeFov[i] = Life.Utils.randomNormal(agent.eyeFov[i], mutationRate2);
-                if(Math.random() < mutationRate1 * 5) agent.eyeDir[i] = Life.Utils.randomNormal(agent.eyeDir[i], mutationRate2);
-                if(agent.eyeFov[i] < 0) agent.eyeFov = 0;
-                if(agent.eyeDir[i] < 0) agent.eyeDir = 0;
-                if(agent.eyeDir[i] > 2* Math.PI) agent.eyeDir = 2*Math.PI;
-            }
+        //Copy eyes
+        agent.eyes = _this.eyes;
 
-            agent.temperaturePreference = Life.Utils.cap(Life.Utils.randomNormal(_this.temperaturePreference, 0.005));
-            agent.brain = _this.brain;
-            agent.brain.mutate(mutationRate1, mutationRate2);
+        agent.temperaturePreference = Life.Utils.cap(Life.Utils.randomNormal(_this.temperaturePreference, 0.005));
+        agent.brain = _this.brain;
+        agent.mutate();
 
-            return agent;
-        },
+        return agent;
+    };
 
-        this.crossover = function(partner){
-            var agent = new Life.Agent(parameters);
-            agent.hybrid = true;
-            agent.generationCount = _this.generationCount;
-            if(partner.generationCount < agent.generationCount) agent.generationCount = partner.generationCount;
+    /**
+     * Performs mutations on the current agent and its brain.
+     */
+    this.mutate = function () {
+        //Low probability of increased mutation rates
+        var mutationRate1 = Math.random() < 0.04 ? _this.mutationRate[0] *= Math.random() * 10 : _this.mutationRate[0];
+        var mutationRate2 = Math.random() < 0.04 ? _this.mutationRate[1] *= Math.random() * 10 : _this.mutationRate[1];
 
-            //Randomise which parent attributes are inherited from
-            agent.clock1 = Math.random() < 0.5 ? _this.clock1 : partner.clock1;
-            agent.clock2 = Math.random() < 0.5 ? _this.clock2 : partner.clock2;
-            agent.herbivore = Math.random() < 0.5 ? _this.herbivore : partner.herbivore;
-            agent.mutationRate = Math.random() < 0.5 ? _this.mutationRate : partner.mutationRate;
-            agent.temperaturePreference = Math.random() < 0.5 ? _this.temperaturePreference : partner.temperaturePreference;
+        //Mutate senses
+        if (Math.random() < mutationRate1 * 5) _this.smellModifier = Life.Utils.randomNormal(_this.smellModifier, mutationRate2);
+        if (Math.random() < mutationRate1 * 5) _this.soundModifier = Life.Utils.randomNormal(_this.soundModifier, mutationRate2);
+        if (Math.random() < mutationRate1 * 5) _this.hearingModifier = Life.Utils.randomNormal(_this.hearingModifier, mutationRate2);
+        if (Math.random() < mutationRate1 * 5) _this.eyeSenseModifier = Life.Utils.randomNormal(_this.eyeSenseModifier, mutationRate2);
+        if (Math.random() < mutationRate1 * 5) _this.bloodModifier = Life.Utils.randomNormal(_this.bloodModifier, mutationRate2);
 
-            agent.smellModifier = Math.random() < 0.5 ? _this.smellModifier: partner.smellModifier;
-            agent.soundModifier= Math.random() < 0.5 ? _this.soundModifier: partner.soundModifier;
-            agent.hearingModifier = Math.random() < 0.5 ? _this.hearingModifier: partner.hearingModifier;
-            agent.eyeSenseModifier = Math.random() < 0.5 ? _this.eyeSenseModifier: partner.eyeSenseModifier;
-            agent.bloodModifier = Math.random() < 0.5 ? _this.bloodModifier: partner.bloodModifier;
-
-            agent.eyeFov = Math.random() < 0.5 ? _this.eyeFov: partner.eyeFov;
-            agent.eyeDir = Math.random() < 0.5 ? _this.eyeDir: partner.eyeDir;
-
-            agent.brain = _this.brain.crossover(partner.brain);
-
-            return agent;
+        for(var i in _this.eyes){
+            var eye = _this.eyes[i];
+            if (Math.random() < mutationRate1 * 5) eye.fov = Life.Utils.randomNormal(eye.fov, mutationRate2);
+            if (Math.random() < mutationRate1 * 5) eye.dir = Life.Utils.randomNormal(eye.dir, mutationRate2);
+            if (eye.fov < 0) eye.fov = 0;
+            if (eye.dir < 0) eye.dir = 0;
+            if (eye.dir > 2 * Math.PI) eye.dir = 2 * Math.PI;
         }
+
+        _this.brain.mutate(mutationRate1, mutationRate2);
+    };
+
+    /**
+     * Produces a new agent with attributes randomly inherited from either itself or a partner, with mutations applied.
+     * @param partner Partner agent from which some attributes may be inherited
+     * @return {Life.Agent} A new agent containing a mix of the two parents' attributes
+     */
+    this.crossover = function (partner) {
+        var agent = new Life.Agent(parameters);
+        agent.hybrid = true;
+        agent.generationCount = Math.max(_this.generationCount, partner.generationCount) + 1;
+
+        //Randomise which parent attributes are inherited from
+        agent.clock1 = Math.random() < 0.5 ? _this.clock1 : partner.clock1;
+        agent.clock2 = Math.random() < 0.5 ? _this.clock2 : partner.clock2;
+        agent.herbivore = Math.random() < 0.5 ? _this.herbivore : partner.herbivore;
+        agent.mutationRate = Math.random() < 0.5 ? _this.mutationRate : partner.mutationRate;
+        agent.temperaturePreference = Math.random() < 0.5 ? _this.temperaturePreference : partner.temperaturePreference;
+
+        agent.smellModifier = Math.random() < 0.5 ? _this.smellModifier : partner.smellModifier;
+        agent.soundModifier = Math.random() < 0.5 ? _this.soundModifier : partner.soundModifier;
+        agent.hearingModifier = Math.random() < 0.5 ? _this.hearingModifier : partner.hearingModifier;
+        agent.eyeSenseModifier = Math.random() < 0.5 ? _this.eyeSenseModifier : partner.eyeSenseModifier;
+        agent.bloodModifier = Math.random() < 0.5 ? _this.bloodModifier : partner.bloodModifier;
+
+        agent.eyes = Math.random() < 0.5 ? _this.eyes : partner.eyes;
+
+        agent.brain = _this.brain.crossover(partner.brain);
+        agent.mutate();
+        return agent;
+    };
 };
 
+/**
+ * Represents an agent's eye
+ * @param agent Agent that this eye belongs to
+ * @constructor
+ */
+Life.Agent.Eye = function(agent){
 
+    var _agent = agent,
+        _this = this;
 
-Life.Box = function(parameters){
+    this.fov= 0;
+    this.dir= 0;
+    this.proximity=0;
+    this.red=0;
+    this.green=0;
+    this.blue=0;
+
+    this.look = function(agent2){
+            var angleBetween = agent.pos.angleFromNorth(agent2.pos);
+            var eyeDirection = agent.angle + _this.dir;
+            if (eyeDirection < -Math.PI) eyeDirection += 2 * Math.PI;
+            if (eyeDirection > Math.PI) eyeDirection -= 2 * Math.PI;
+
+            var diff = eyeDirection - angleBetween;
+            diff = (Math.abs(diff) > Math.PI) ? Math.abs(2 * Math.PI - Math.abs(diff)) : Math.abs(diff);
+
+            var distance = agent.pos.distanceFrom(agent2.pos);
+            _this.distance = distance;
+            if(diff < _this.fov){
+                var mul = agent.eyeSenseModifier * (Math.abs(_this.fov - diff) / _this.fov) * ((agent.viewDistance - distance) / agent.viewDistance);
+                _this.proximity += mul * (distance/agent.viewDistance);
+                _this.red += mul * agent2.red;
+                _this.green += mul * agent2.green;
+                _this.blue += mul * agent2.blue;
+            }
+    };
+
+    this.reset = function(){
+        this.proximity = 0;
+        this.red = 0;
+        this.green = 0;
+        this.blue = 0;
+    }
+
+}
+
+    /**
+ * A single 'neuron' of the agent's brain.
+ * @param parameters A list of parameters, see <a href="https://github.com/JimAllanson/lifejs/wiki/Default-Parameters">a list of defaults here.</a>
+ * @constructor
+ */
+Life.Box = function (parameters) {
 
     var _this = this;
 
@@ -683,214 +761,326 @@ Life.Box = function(parameters){
     this.output = 0;
     this.oldOut = 0;
 
-    for(var i =0; i < parameters.brain.connections; i++){
-        _this.weight[i] = Math.random()*6 - 3;
-        if(Math.random() < 0.5) _this.weight[i] = 0;
+    for (var i = 0; i < parameters.brain.connections; i++) {
+        _this.weight[i] = Math.random() * 6 - 3;
+        if (Math.random() < 0.5) _this.weight[i] = 0;
 
-        _this.id[i] = Math.floor(Math.random()*parameters.brain.size);
-        if(Math.random() < 0.2) _this.id[i] = Math.round(Math.random()*parameters.brain.inputSize);
+        _this.id[i] = Math.round(Math.random() * (parameters.brain.size - 1));
+        if (Math.random() < 0.2) _this.id[i] = Math.round(Math.random() * (parameters.brain.inputSize - 1));
 
         _this.type[i] = (Math.random() < 0.05) ? 1 : 0;
     }
 
 };
 
-Life.Brain = function(parameters){
+/**
+ * An agents brain, consisting of a number of linked boxes (similar to neurons in a biological brain)
+ * @param parameters A list of parameters, see <a href="https://github.com/JimAllanson/lifejs/wiki/Default-Parameters">a list of defaults here.</a>
+ * @constructor
+ */
+Life.Brain = function (parameters) {
 
     var _this = this;
-
     this.boxes = Array();
 
-    for(var i = 0; i < parameters.brain.size; i++){
+    for (var i = 0; i < parameters.brain.size; i++) {
         _this.boxes.push(new Life.Box(parameters));
     }
 
-
-    this.tick = function(input, output){
-        for(var i = 0; i < parameters.brain.inputSize; i++){
+    /**
+     * Performs a tick of the brain, translating a list of inputs into a list of outputs
+     * @param input Array of inputs to the brain, each a float value between 0 and 1.
+     * @param output Array to contain outputs from the brain, each a float value between 0 and 1.
+     */
+    this.tick = function (input, output) {
+        for (var i = 0; i < parameters.brain.inputSize; i++) {
             _this.boxes[i].output = input[i];
         }
 
-        for(var i = parameters.brain.inputSize; i < parameters.brain.size; i++){
+        for (var i = parameters.brain.inputSize; i < parameters.brain.size; i++) {
             var box = _this.boxes[i];
 
             var acc = 0;
-            for(var j = 0; j < parameters.brain.connections; j++){
+            for (var j = 0; j < parameters.brain.connections; j++) {
                 var index = box.id[j];
                 var type = box.type[j];
                 var value = _this.boxes[index].output;
 
-                if(type == 1){
+                if (type == 1) {
                     value -= _this.boxes[index].oldOut;
                     value *= 10;
                 }
-                acc+= value * box.weight[j];
+                acc += value * box.weight[j];
             }
 
             acc *= box.globalWeight;
             acc += box.bias;
-            acc = 1/(1+Math.exp(-acc));
+            acc = 1 / (1 + Math.exp(-acc));
             box.target = acc;
         }
 
-        for(var i = 0; i < parameters.brain.size; i++){
+        for (var i = 0; i < parameters.brain.size; i++) {
             _this.boxes[i].oldOut = _this.boxes[i].output;
         }
 
-        for(var i = parameters.brain.inputSize; i < parameters.brain.size; i++){
+        for (var i = parameters.brain.inputSize; i < parameters.brain.size; i++) {
             var box = _this.boxes[i];
             box.output += (box.target - box.output) * box.damper;
         }
 
-        for(var i = 0; i < parameters.brain.outputSize; i++){
-            output[i] = _this.boxes[parameters.brain.size-1-i].output;
+        for (var i = 0; i < parameters.brain.outputSize; i++) {
+            output[i] = _this.boxes[parameters.brain.size - 1 - i].output;
         }
-    },
+    };
 
+    /**
+     * Mutates the brain, introducing normally distributed random variations
+     * @param mutationRate1 Mutation probability
+     * @param mutationRate2 Mutation variance
+     */
+    this.mutate = function (mutationRate1, mutationRate2) {
+        for (var i = 0; i < parameters.brain.size; i++) {
+            if (Math.random() < mutationRate1) {
+                _this.boxes[i].bias += Life.Utils.randomNormal(0, mutationRate2);
+            }
 
-        this.mutate = function(mutationRate1, mutationRate2){
-            for(var i = 0; i < parameters.brain.size; i++){
-                if(Math.random() < mutationRate1){
-                    _this.boxes[i].bias += Life.Utils.randomNormal(0, mutationRate2);
+            if (Math.random() < mutationRate1) {
+                _this.boxes[i].damper += Life.Utils.randomNormal(0, mutationRate2);
+                if (_this.boxes[i].damper < 0.001) _this.boxes[i].damper = 0.001;
+                if (_this.boxes[i].damper > 1) _this.boxes[i].damper = 1;
+            }
+
+            if (Math.random() < mutationRate1) {
+                _this.boxes[i].globalWeight += Life.Utils.randomNormal(0, mutationRate2);
+                if (_this.boxes[i].globalWeight < 0) _this.boxes[i].globalWeight = 0;
+            }
+
+            if (Math.random() < mutationRate1) {
+                var rc = Math.round(Math.random() * parameters.brain.connections);
+                _this.boxes[i].weight[rc] += Life.Utils.randomNormal(0, mutationRate2);
+            }
+
+            if (Math.random() < mutationRate1) {
+                var rc = Math.round(Math.random() * parameters.brain.connections);
+                _this.boxes[i].type[rc] = 1 - _this.boxes[i].type[rc];
+            }
+
+            if (Math.random() < mutationRate1) {
+                var rc = Math.round(Math.random() * (parameters.brain.connections - 1));
+                var ri = Math.round(Math.random() * (parameters.brain.size - 1));
+                _this.boxes[i].id[rc] = ri;
+            }
+        }
+    };
+
+    /**
+     * Crosses this brain with that of another agent, producing a new brain that is a mix of both parents'.
+     * @param partner
+     * @return {Life.Brain}
+     */
+    this.crossover = function (partner) {
+        var brain = new Life.Brain(parameters);
+        for (var i = 0; i < brain.boxes.length; i++) {
+            if (Math.random() < 0.5) {
+                brain.boxes[i].bias = _this.boxes[i].bias;
+                brain.boxes[i].globalWeight = _this.boxes[i].globalWeight;
+                brain.boxes[i].damper = _this.boxes[i].damper;
+                for (var j = 0; j < brain.boxes[i].id.length; j++) {
+                    brain.boxes[i].id[j] = _this.boxes[i].id[j];
+                    brain.boxes[i].weight[j] = _this.boxes[i].weight[j];
+                    brain.boxes[i].type[j] = _this.boxes[i].type[j];
                 }
-
-                if(Math.random() < mutationRate1){
-                    _this.boxes[i].damper += Life.Utils.randomNormal(0, mutationRate2);
-                    if(_this.boxes[i].damper < 0.001) _this.boxes[i].damper = 0.001;
-                    if(_this.boxes[i].damper > 1) _this.boxes[i].damper = 1;
-                }
-
-                if(Math.random() < mutationRate1){
-                    _this.boxes[i].globalWeight += Life.Utils.randomNormal(0, mutationRate2);
-                    if(_this.boxes[i].globalWeight < 0) _this.boxes[i].globalWeight = 0;
-                }
-
-                if(Math.random() < mutationRate1){
-                    var rc = Math.round(Math.random() * parameters.brain.connections);
-                    _this.boxes[i].weight[rc] += Life.Utils.randomNormal(0, mutationRate2);
-                }
-
-                if(Math.random() < mutationRate1){
-                    var rc = Math.round(Math.random() * parameters.brain.connections);
-                    _this.boxes[i].type[rc] = 1 - _this.boxes[i].type[rc];
-                }
-
-                if(Math.random() < mutationRate1){
-                    var rc = Math.round(Math.random() * parameters.brain.connections);
-                    var ri = Math.round(Math.random() * parameters.brain.size);
-                    _this.boxes[i].id[rc] = ri;
+            } else {
+                brain.boxes[i].bias = partner.boxes[i].bias;
+                brain.boxes[i].globalWeight = partner.boxes[i].globalWeight;
+                brain.boxes[i].damper = partner.boxes[i].damper;
+                for (var j = 0; j < brain.boxes[i].id.length; j++) {
+                    brain.boxes[i].id[j] = partner.boxes[i].id[j];
+                    brain.boxes[i].weight[j] = partner.boxes[i].weight[j];
+                    brain.boxes[i].type[j] = partner.boxes[i].type[j];
                 }
             }
-        },
-
-        this.crossover = function(partner){
-            var brain = new Life.Brain(parameters);
-
-            for(var i = 0; i < brain.boxes.length; i++){
-                if(Math.random() < 0.5){
-                    brain.boxes[i].bias = _this.boxes[i].bias;
-                    brain.boxes[i].globalWeight = _this.boxes[i].globalWeight;
-                    brain.boxes[i].damper = _this.boxes[i].damper;
-                    for(var j = 0; j < brain.boxes[i].id.length; j++){
-                        brain.boxes[i].id[j] = _this.boxes[i].id[j];
-                        brain.boxes[i].weight[j] = _this.boxes[i].weight[j];
-                        brain.boxes[i].type[j] = _this.boxes[i].type[j];
-                    }
-                }else{
-                    brain.boxes[i].bias = partner.boxes[i].bias;
-                    brain.boxes[i].globalWeight = partner.boxes[i].globalWeight;
-                    brain.boxes[i].damper = partner.boxes[i].damper;
-                    for(var j = 0; j < brain.boxes[i].id.length; j++){
-                        brain.boxes[i].id[j] = partner.boxes[i].id[j];
-                        brain.boxes[i].weight[j] = partner.boxes[i].weight[j];
-                        brain.boxes[i].type[j] = partner.boxes[i].type[j];
-                    }
-                }
-            }
-            return brain;
         }
+        return brain;
+    };
 
 };
 
-
+/**
+ * Utility functions
+ */
 Life.Utils = {};
-
-Life.Utils.cap = function(x){
-    if(x<0) return 0;
-    if(x>1) return 1;
+/**
+ * Caps a value between 0 and 1
+ * @param x Value to cap
+ * @return {*} x, capped between 0 and 1
+ */
+Life.Utils.cap = function (x) {
+    if (x < 0) return 0;
+    if (x > 1) return 1;
     return x;
 };
+/**
+ * Produces a random number with normal distribution from a mean and variance.
+ * @param mean The mean number to produce
+ * @param variance The level of variation from the mean
+ * @return {Number} A random number
+ */
+Life.Utils.randomNormal = function (mean, variance) {
+    return Math.round(((Math.random() * 2 - 1) + (Math.random() * 2 - 1) + (Math.random() * 2 - 1)) * variance + mean);
+};
+/**
+ * Produces an RGBA CSS string from four values between 0 and 1.
+ * @param r Red component
+ * @param g Green component
+ * @param b Blue component
+ * @param a Alpha component
+ * @return {String} RGBA colour as a CSS string
+ */
+Life.Utils.rgbaToCss = function (r, g, b, a) {
+    return "rgba(" + Math.floor(r * 255) + "," + Math.floor(g * 255) + "," + Math.floor(b * 255) + ", " + a + ")";
+};
 
-Life.Utils.randomNormal = function(mean, sigma){
-    return Math.round(((Math.random()*2-1)+(Math.random()*2-1)+(Math.random()*2-1)) * sigma + mean);
+
+/**
+ * Basic 2D Vector Math
+ * @param x X coordinate of Vector
+ * @param y Y coordinate of Vector
+ * @constructor
+ */
+Life.Vector = function(x, y){
+
+    var _this = this;
+    this.x = x;
+    this.y = y;
+
+    /**
+     * Returns the distance between this vector and another.
+     * @param vector The other vector
+     * @return {Number} The distance between the two vectors
+     */
+    this.distanceFrom = function(vector){
+        return Math.sqrt(Math.pow(Math.abs(x - vector.x),2) + Math.pow(y - vector.y, 2));
+    };
+
+    /**
+     * Returns the angle between 'North' (π / 2) and another vector
+     * @param vector Other vector
+     * @return {Number} Angle in radians.
+     */
+    this.angleFromNorth = function(vector){
+        return Math.atan2(vector.y - _this.y, vector.x - _this.x) - Math.PI / 2;
+    };
+
+    /**
+     * Rotates a vector around the origin by a supplied angle (in radians)
+     * @param angle Angle to rotate by
+     * @return {Life.Vector} New vector after rotation
+     */
+    this.rotate = function(angle){
+        var angle = (angle < 0) ? 2*Math.PI + angle : angle;
+        var px = (_this.x * Math.cos(angle)) - (_this.y * Math.sin(angle));
+        var py = (_this.x * Math.sin(angle)) + (_this.y * Math.cos(angle));
+        return new Life.Vector(px, py);
+    };
+
+    /**
+     * Adds this vector to another
+     * @param vector Other vector
+     * @return {Life.Vector} Sum of vectors
+     */
+    this.add = function(vector){
+        return new Life.Vector(_this.x + vector.x, _this.y + vector.y);
+    };
+
+    /**
+     * Subtracts another vector from this
+     * @param vector Other vector
+     * @return {Life.Vector} Difference between vectors
+     */
+    this.subtract = function(vector){
+        return new Life.Vector(_this.x - vector.x, _this.y - vector.y);
+    };
+
 }
 
-Life.Utils.rgbaToCss = function(r, g, b, a){
-    return "rgba("+ Math.floor(r * 255) +","+ Math.floor(g * 255) +","+ Math.floor(b * 255) +", "+a+")";
-}
+
+
 
 
 
 var _selectedAgent = null;
 var _world;
 
-function init(parameters){
+/**
+ * Creates a simulation an schedules a new tick at the specified frequency
+ * @param parameters A list of parameters, see <a href="https://github.com/JimAllanson/lifejs/wiki/Default-Parameters">a list of defaults here.</a>
+ */
+function init(parameters) {
     _world = new Life.World(parameters);
     _selectedAgent = _world.agents[0];
+    _world.agents[0].selectFlag = true;
     setInterval(tick, parameters.tickDuration);
 }
 
-function tick(){
+/**
+ * Updates the simulation and posts data back to the Renderer
+ */
+function tick() {
     _world.update();
-    postData();
+
+    //Strips brain data from agents before posting back for performance
+    var agents = Array();
+    for (var id in _world.agents) {
+        var agent = {};
+        for (var attr in _world.agents[id]) {
+            if (attr != "brain") {
+                agent[attr] = _world.agents[id][attr];
+            }
+        }
+        agents.push(agent);
+    }
+    //Send the world and currently selected agent
+    var world = {agents:agents, food:_world.food};
+    self.postMessage(JSON.stringify({world:world, agent:_selectedAgent}))
 }
 
-function selectAgent(x, y){
+/**
+ * Selects the nearest agent to a given x and y coordinate
+ * @param x X coordinate
+ * @param y Y coordinate
+ */
+function selectAgent(x, y) {
     var minD = 1e10;
     var minI = 1;
     var d;
 
-    for(var i = 0; i < _world.agents.length; i++){
-        d = Math.pow(x - _world.agents[i].pos.elements[0], 2) + Math.pow(y - _world.agents[i].pos.elements[1], 2);
-        if(d < minD){
+    for (var i = 0; i < _world.agents.length; i++) {
+        d = Math.pow(x - _world.agents[i].pos.x, 2) + Math.pow(y - _world.agents[i].pos.y, 2);
+        if (d < minD) {
             minD = d;
             minI = i;
         }
     }
 
-    for(var i = 0; i < _world.agents.length; i++){
+    for (var i = 0; i < _world.agents.length; i++) {
         _world.agents[i].selectFlag = false;
     }
     _world.agents[minI].selectFlag = true;
     _selectedAgent = _world.agents[minI];
 }
 
-
-function postData(){
-    var agents = Array();
-    for(var id in _world.agents){
-        var agent = {};
-        for(var attr in _world.agents[id]){
-            if(attr != "brain"){
-                agent[attr] = _world.agents[id][attr];
-            }
-        }
-        agents.push(agent);
-    }
-
-    var world = {agents:agents, food: _world.food};
-    self.postMessage(JSON.stringify({world:world, agent: _selectedAgent}))
-}
-
-
-self.onmessage = function(event){
+/**
+ * Processes incoming messages from the renderer
+ * @param event Object containing message data
+ */
+self.onmessage = function (event) {
     var data = event.data;
-    if(data.action == "init"){
+    if (data.action == "init") {
         init(data.parameters);
-    }else if(data.action == "select"){
+    } else if (data.action == "select") {
         selectAgent(data.x, data.y);
     }
-
 }
 
 
