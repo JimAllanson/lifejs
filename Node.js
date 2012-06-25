@@ -1243,7 +1243,10 @@ var app = express.createServer()
 var port = process.env.PORT || 3000;
 app.listen(port);
 io.set('log level', 1);
-
+io.configure(function () {
+    io.set("transports", ["xhr-polling"]);
+    io.set("polling duration", 10);
+});
 
 
 app.configure(function() {
