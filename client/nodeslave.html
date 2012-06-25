@@ -152,7 +152,7 @@
         var parameters = {height: height, width:width, maxAgents:70, tickDuration:1, agent: {babies: 1}};
         simulation = new Life.Simulation(parameters);
         view = new Life.Renderer(simulation);
-        simulation.init({type:"node",server:"http://212.159.77.29",slave:true});
+        simulation.init({type:"node",server:"http://lifejs.herokuapp.com",slave:true});
         view.init();
         document.getElementById("sim").appendChild(view.canvas);
         ui = new Life.UI(simulation);
