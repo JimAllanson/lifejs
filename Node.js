@@ -1240,8 +1240,8 @@ function selectAgent(x, y) {
  var express = require('express');
 var app = express.createServer()
   , io = require('socket.io').listen(app);
-
-app.listen(80);
+var port = process.env.PORT || 3000;
+app.listen(port);
 io.set('log level', 1);
 
 
