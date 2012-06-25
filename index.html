@@ -1,125 +1,165 @@
-<!DOCTYPE HTML>
-<html>
+
+<!DOCTYPE html>
+<html lang="en">
 <head>
-    <title></title>
+    <meta charset="utf-8">
+    <title>Life.js</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="">
+    <meta name="author" content="">
+
+    <!-- Le styles -->
+    <link href="bootstrap/css/bootstrap.css" rel="stylesheet">
     <style>
-        html, body {
-            margin: 0px;
+        body {
+            padding-top: 40px; /* 60px to make the container go all the way to the bottom of the topbar */
+            overflow:hidden;
+        }
+        #controls{
+            position:absolute;
+            top:30%;
+            height:70%;
+            width:100%;
+            display:none;
+            background:white;
+            opacity:0.8;
         }
 
-        #agentInspector {
-            margin: 0px;
-            padding: 0px;
-            background: #FFF;
+        #fitness{
+            position:relative;
+            width:100%;
+            height:60%;
         }
 
         #brain {
-            height: 400px;
-            width: 100%;
+            position:relative;
+            float:left;
+            height: 500px;
+            width: 500px;
             margin: 0px;
             padding: 0px;
-            background: #FFF;
+            background: #000;
+        }
+        .btn-group{
+            float:left;
         }
     </style>
-    <link type="text/css" href="css/ui-lightness/jquery-ui-1.8.20.custom.css" rel="stylesheet"/>
-    <script type="text/javascript" src="https://ajax.googleapis.com/ajax/libs/jquery/1.7.2/jquery.min.js"></script>
-    <script type="text/javascript"
-            src="https://ajax.googleapis.com/ajax/libs/jqueryui/1.8.18/jquery-ui.min.js"></script>
+    <link href="bootstrap/css/bootstrap-responsive.css" rel="stylesheet">
 
-    <script type="text/javascript" src="jit.js"></script>
-    <script type="text/javascript" src="Life.js"></script>
+    <!-- Le HTML5 shim, for IE6-8 support of HTML5 elements -->
+    <!--[if lt IE 9]>
+    <script src="http://html5shim.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
 
+    <!-- Le fav and touch icons -->
+    <link rel="shortcut icon" href="bootstrap/ico/favicon.ico">
+    <link rel="apple-touch-icon-precomposed" sizes="144x144" href="bootstrap/ico/apple-touch-icon-144-precomposed.png">
+    <link rel="apple-touch-icon-precomposed" sizes="114x114" href="bootstrap/ico/apple-touch-icon-114-precomposed.png">
+    <link rel="apple-touch-icon-precomposed" sizes="72x72" href="bootstrap/ico/apple-touch-icon-72-precomposed.png">
+    <link rel="apple-touch-icon-precomposed" href="bootstrap/ico/apple-touch-icon-57-precomposed.png">
 </head>
+
 <body>
+
+<div class="navbar navbar-fixed-top">
+    <div class="navbar-inner">
+        <div class="btn-group">
+            <button class="btn btn-primary" data-toggle="button" id="pause">Pause</button>
+            <button class="btn" data-toggle="button" id="showControls">Show Advanced Controls</button>
+            <button class="btn" data-toggle="button" id="enableLogging">Enable Logging</button>
+        </div>
+        <div class="btn-group">
+            <button class="btn btn-success" id="clone">Clone this agent</button>
+            <button class="btn btn-danger" id="kill">Kill this agent</button>
+        </div>
+    </div>
+</div>
+
+<div id="sim">
+
+</div>
+
+<div id="controls">
+    <ul class="nav nav-tabs" id="tabs">
+        <li class="active"><a href="#charts">Charts</a></li>
+        <li><a href="#agent">Selected Agent</a></li>
+        <li><a href="#simulation">Simulation Control</a></li>
+        <li><a href="#render">Render Settings</a></li>
+        <li><a href="#help">Help</a></li>
+    </ul>
+
+    <div class="tab-content">
+        <div class="tab-pane active" id="charts">
+            <div id="fitness" class="maxHeight"></div>
+        </div>
+        <div class="tab-pane" id="agent">
+            <button class="btn" data-toggle="button" id="updateBrainGraph">Update Brain Graph (Slow)</button>
+            <canvas id="eyes" width="500px" height="500px"></canvas>
+            <div id="brain"></div>
+
+        </div>
+        <div class="tab-pane" id="simulation">...</div>
+        <div class="tab-pane" id="render">
+            <button class="btn btn-primary active" data-toggle="button" id="render_grass">Grass</button>
+            <div class="btn-group">
+
+                <button class="btn btn-primary" data-toggle="button" id="render_viewCones">View Cones</button>
+                <button class="btn btn-primary active" data-toggle="button" id="render_eyes">Eyes</button>
+                <button class="btn btn-primary active" data-toggle="button" id="render_indicators">Event Indicators</button>
+                <button class="btn btn-primary active" data-toggle="button" id="render_health">Health Bars</button>
+                <button class="btn btn-primary" data-toggle="button" id="render_stats">Stats</button>
+
+            </div>
+        </div>
+        <div class="tab-pane" id="help">...</div>
+    </div>
+</div>
+
+<!-- /container -->
+
+<!-- Le javascript
+================================================== -->
+<!-- Placed at the end of the document so the pages load faster -->
+<script src="bootstrap/js/jquery.js"></script>
+<script src="bootstrap/js/bootstrap-transition.js"></script>
+<script src="bootstrap/js/bootstrap-alert.js"></script>
+<script src="bootstrap/js/bootstrap-modal.js"></script>
+<script src="bootstrap/js/bootstrap-dropdown.js"></script>
+<script src="bootstrap/js/bootstrap-scrollspy.js"></script>
+<script src="bootstrap/js/bootstrap-tab.js"></script>
+<script src="bootstrap/js/bootstrap-tooltip.js"></script>
+<script src="bootstrap/js/bootstrap-popover.js"></script>
+<script src="bootstrap/js/bootstrap-button.js"></script>
+<script src="bootstrap/js/bootstrap-collapse.js"></script>
+<script src="bootstrap/js/bootstrap-carousel.js"></script>
+<script src="bootstrap/js/bootstrap-typeahead.js"></script>
+
+<script src="http://code.highcharts.com/stock/highstock.js"></script>
+<script src="http://code.highcharts.com/stock/modules/exporting.js"></script>
+
+<script type="text/javascript" src="jit.js"></script>
+<script type="text/javascript" src="Life.js"></script>
+<script type="text/javascript" src="LifeUI.js"></script>
+
+
 <script type="text/javascript">
+    var simulation, view, ui;
 
+    $(document).ready(function(){
+        var height = document.getElementById("sim").height;
+        var width = document.getElementById("sim").width;
+        var parameters = {height: height, width:width, maxAgents:70, tickDuration:1, agent: {babies: 1}};
+        simulation = new Life.Simulation(parameters);
+        view = new Life.Renderer(simulation);
+        simulation.init();
+        view.init();
+        document.getElementById("sim").appendChild(view.canvas);
+        ui = new Life.UI(simulation);
 
-
-
-    var view = new Life.Renderer();
-    view.init();
-    document.body.appendChild(view.canvas);
-    $(function () {
-        $("#agentInspector").dialog({width:500, height:500});
-
-
-        var ht = new $jit.Hypertree({
-            //id of the visualization container
-            injectInto:'brain',
-            //By setting overridable=true,
-            //Node and Edge global properties can be
-            //overriden for each node/edge.
-            Node:{
-                overridable:true,
-                'transform':false
-            },
-
-            Edge:{
-                overridable:true
-            },
-            //calculate nodes offset
-            offset:0.2,
-            //Change the animation transition type
-            transition:$jit.Trans.Back.easeOut,
-            //animation duration (in milliseconds)
-            duration:200,
-
-            //This method is called right before plotting an
-            //edge. This method is useful for adding individual
-            //styles to edges.
-            onBeforePlotLine:function (adj) {
-                //Set random lineWidth for edges.
-                if (!adj.data.$lineWidth)
-                    adj.data.$lineWidth = Math.random() * 7 + 1;
-            },
-
-            onBeforeCompute:function (node) {
-                Log.write("centering");
-            },
-            //Attach event handlers on label creation.
-            onCreateLabel:function (domElement, node) {
-                //domElement.innerHTML = node.name;
-                domElement.style.cursor = "pointer";
-                domElement.onclick = function () {
-                    ht.onClick(node.id, { hideLabels:false });
-                };
-            },
-            //This method is called when moving/placing a label.
-            //You can add some positioning offsets to the labels here.
-            onPlaceLabel:function (domElement, node) {
-                var width = domElement.offsetWidth;
-                var intX = parseInt(domElement.style.left);
-                intX -= width / 2;
-                domElement.style.left = intX + 'px';
-            },
-
-            onAfterCompute:function () {
-
-            }
-        });
-
-        function showBrain() {
-            //view.getBrain();
-            //load JSON graph.
-            ht.loadJSON(view.getBrain(), 2);
-            //compute positions and plot
-            ht.refresh();
-            //end
-            ht.controller.onBeforeCompute(ht.graph.getNode(ht.root));
-            ht.controller.onAfterCompute();
-        }
-
-
-        $("canvas").click(function () {
-            showBrain();
-        });
     });
 
 
 </script>
-<div id="agentInspector" title="Agent Inspector">
 
-    <div id="brain"></div>
-</div>
 </body>
 </html>

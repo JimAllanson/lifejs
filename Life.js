@@ -1,11 +1,6 @@
 var Life = Life || {};
 
-/**
- * Renders data from a simulation to a canvas element
- * @param parameters A list of parameters, see <a href="https://github.com/JimAllanson/lifejs/wiki/Default-Parameters">a list of defaults here.</a>
- * @constructor
- */
-Life.Renderer = function (parameters) {
+Life.Simulation = function(parameters){
 
     //Default parameters
     var _params = {
@@ -70,6 +65,7 @@ Life.Renderer = function (parameters) {
         }
     };
 
+    //Recursively copies any options supplied as parameters onto a default parameters object
     function copyOptions(from, to){
         for(var i in from){
             if(typeof from[i] == "object"){
@@ -82,28 +78,129 @@ Life.Renderer = function (parameters) {
     }
 
     copyOptions(parameters, _params);
-    console.log(_params);
 
+    //Ensure that the width and height are a multiple of the cell size
     _params.width = Math.floor(_params.width / _params.cellSize) * _params.cellSize;
     _params.height = Math.floor(_params.height / _params.cellSize) * _params.cellSize;
 
     var _this = this,
+        _world = null,
+        _selectedAgent = null,
+        _callback = function(x){},
+        _renderer = null,
+        _worker = null,
+        _socket = null;
+
+    this.parameters = _params;
+
+
+
+    this.sendCommand = function(command, options){
+        if(_socket !== null){
+            _socket.emit(command, options);
+        }else{
+            _worker.postMessage({action:command, parameters:options});
+        }
+    };
+
+
+    /**
+     * Allows a callback to be attached to handle advanced rendering of data, e.g. for graphing
+     * @param callback Function to call when new simulation data is available
+     */
+    this.onUpdate = function (callback) {
+        _callback = callback;
+    };
+
+    /**
+     * Attaches a renderer to the simulation
+     */
+    this.setRenderer = function(renderer){
+        _renderer = renderer;
+        this.renderer = _renderer;
+    };
+
+    /**
+     *
+     */
+    this.init = function(options){
+        //Whether to run the simulation locally, or as a node.js process
+        if(options && options.type == "node"){
+            var server = options.server || "http://localhost";
+
+            _socket = io.connect(server);
+            _socket.on('update', function (data) {
+                _world = data.world;
+                _selectedAgent = data.agent;
+                _callback(data);
+                _renderer.update(_world, _selectedAgent);
+            });
+            _socket.on('save', function (data) {
+                _this.saved = data.world;
+            });
+
+            _socket.on('connected', function (data) {
+                _this.parameters = data.world.parameters;
+                _world = data.world;
+                _selectedAgent = data.agent;
+                _renderer.init();
+            });
+
+        }else{
+            //Running the simulation locally, in JS. Use a Web Worker
+            _worker = new Worker('Worker.js');
+            _worker.onmessage = function (event) {
+                data = JSON.parse(event.data);
+                if(data.action == "update"){
+                    _world = data.world;
+                    _selectedAgent = data.agent;
+                    _callback(data);
+                    _renderer.update(_world, _selectedAgent);
+                }else if(data.action == "save"){
+                    _this.saved = data.world;
+                }
+            };
+
+            _renderer.init();
+        }
+        if(options && options.slave){
+            _this.sendCommand("listen");
+        }else{
+            _this.sendCommand("init", _this.parameters);
+        }
+
+    }
+
+};
+
+
+/**
+ * Renders data from a simulation to a canvas element
+ * @param parameters A list of parameters, see <a href="https://github.com/JimAllanson/lifejs/wiki/Default-Parameters">a list of defaults here.</a>
+ * @constructor
+ */
+Life.Renderer = function (simulation) {
+
+    var _this = this,
         _canvas = document.createElement('canvas'),
-        _canvasWidth = _params.width,
-        _canvasHeight = _params.height,
         _context = _canvas.getContext('2d'),
         _world = null,
         _selectedAgent = null,
-        _callback = function (x) {
-        };
+        _simulation = simulation;
 
-    _canvas.width = _canvasWidth;
-    _canvas.height = _canvasHeight;
+    _simulation.setRenderer(_this);
+
 
     this.canvas = _canvas;
-    this.world = _world;
-    this.agent = _selectedAgent;
-    this.parameters = _params;
+    this.parameters = simulation.parameters;
+    this.shouldRender = {
+        viewCones: false,
+        eyes:true,
+        indicators:true,
+        stats:false,
+        health:true,
+        food: true
+    }
 
     /**
      * Animates the simulation, using requestAnimationFrame to allow browser to control framerate
@@ -118,13 +215,15 @@ Life.Renderer = function (parameters) {
      */
     this.render = function () {
         if (_world) {
-            _context.clearRect(0, 0, _canvasWidth, _canvasHeight);
+            _context.clearRect(0, 0, _this.parameters.width, _this.parameters.height);
 
             //Draw food levels in cells
-            for (var x = 0; x < Math.floor(_this.parameters.width / _this.parameters.cellSize); x++) {
-                for (var y = 0; y < Math.floor(_this.parameters.height / _this.parameters.cellSize); y++) {
-                    var f = 0.5 * _world.food[x][y] / _this.parameters.maxFood;
-                    _this.drawFood(x, y, f);
+            if(_this.shouldRender.food){
+                for (var x = 0; x < Math.floor(_this.parameters.width / _this.parameters.cellSize); x++) {
+                    for (var y = 0; y < Math.floor(_this.parameters.height / _this.parameters.cellSize); y++) {
+                        var f = 0.5 * _world.food[x][y] / _this.parameters.maxFood;
+                        _this.drawFood(x, y, f);
+                    }
                 }
             }
 
@@ -141,17 +240,19 @@ Life.Renderer = function (parameters) {
      */
     this.renderAgent = function (agent) {
         //Indicator
-        _context.beginPath();
-        _context.fillStyle = Life.Utils.rgbaToCss(agent.indicator.red, agent.indicator.green, agent.indicator.blue, 0.5);
-        _context.arc(agent.pos.x, agent.pos.y, _this.parameters.agent.radius + Math.floor(agent.indicator.size), 0, 2 * Math.PI, false);
-        _context.fill();
+        if(_this.shouldRender.indicators){
+            _context.beginPath();
+            _context.fillStyle = Life.Utils.rgbaToCss(agent.indicator.red, agent.indicator.green, agent.indicator.blue, 0.5);
+            _context.arc(agent.pos.x, agent.pos.y, _this.parameters.agent.radius + Math.floor(agent.indicator.size), 0, 2 * Math.PI, false);
+            _context.fill();
+        }
 
 
         //Selected
         if (agent.selectFlag) {
             _context.beginPath();
             _context.fillStyle = Life.Utils.rgbaToCss(255, 0, 255, 0.3);
-            _context.arc(agent.pos.x, agent.pos.y, _this.parameters.agent.radius + 10, 0, 2 * Math.PI, false);
+            _context.arc(agent.pos.x, agent.pos.y, _this.parameters.agent.radius + 20, 0, 2 * Math.PI, false);
             _context.fill();
         }
 
@@ -159,11 +260,24 @@ Life.Renderer = function (parameters) {
         _context.strokeStyle = "rgba(60,60,60,1)";
         for (var i in agent.eyes) {
             var eye = agent.eyes[i];
-            _context.beginPath();
-            _context.moveTo(agent.pos.x, agent.pos.y);
-            var angle = agent.angle + eye.dir;
-            _context.lineTo(agent.pos.x + (_this.parameters.agent.radius * 2) * Math.cos(angle), agent.pos.y + (_this.parameters.agent.radius * 2) * Math.sin(angle));
-            _context.stroke();
+            var angle = agent.angle + eye.direction;
+
+            if(_this.shouldRender.eyes){
+                _context.beginPath();
+                _context.moveTo(agent.pos.x, agent.pos.y);
+                _context.lineTo(agent.pos.x + (_this.parameters.agent.radius * 2) * Math.cos(angle), agent.pos.y + (_this.parameters.agent.radius * 2) * Math.sin(angle));
+                _context.strokeStyle = "rgba(0,0,0,0.3)"
+                _context.stroke();
+            }
+
+            if(_this.shouldRender.viewCones){
+                _context.beginPath();
+                _context.moveTo(agent.pos.x, agent.pos.y);
+                _context.arc(agent.pos.x, agent.pos.y,_this.parameters.agent.viewDistance * eye.proximity + _this.parameters.agent.radius, angle - (eye.fov / 2), angle + ( eye.fov / 2), false);
+                _context.fillStyle = Life.Utils.rgbaToCss(eye.red, eye.green, eye.blue, 0.5);
+                _context.closePath();
+                _context.fill();
+            }
         }
 
         //Body
@@ -194,32 +308,36 @@ Life.Renderer = function (parameters) {
         var yo = -15;
 
         //Health
-        _context.fillStyle = "black";
-        _context.fillRect(agent.pos.x + xo, agent.pos.y + yo, 5, 40);
-        _context.fillStyle = "rgba(0,200,0,1)";
-        _context.fillRect(agent.pos.x + xo, agent.pos.y + yo + 20 * (2 - agent.health), 5, 40 - (20 * (2 - agent.health)));
-
-        //Hybrid
-        if (agent.hybrid) {
-            _context.fillStyle = Life.Utils.rgbaToCss(0, 0.8, 0, 1);
-            _context.fillRect(agent.pos.x + xo + 6, agent.pos.y + yo, 5, 10);
+        if(_this.shouldRender.health){
+            _context.fillStyle = "black";
+            _context.fillRect(agent.pos.x + xo, agent.pos.y + yo, 5, 40);
+            _context.fillStyle = "rgba(0,200,0,1)";
+            _context.fillRect(agent.pos.x + xo, agent.pos.y + yo + 20 * (2 - agent.health), 5, 40 - (20 * (2 - agent.health)));
         }
 
-        //Herbivore-ness
-        _context.fillStyle = Life.Utils.rgbaToCss(1 - agent.herbivore, agent.herbivore, 0, 1);
-        _context.fillRect(agent.pos.x + xo + 6, agent.pos.y + yo + 12, 5, 10);
+        if(_this.shouldRender.stats){
+            //Hybrid
+            if (agent.hybrid) {
+                _context.fillStyle = Life.Utils.rgbaToCss(0, 0.8, 0, 1);
+                _context.fillRect(agent.pos.x + xo + 6, agent.pos.y + yo, 5, 10);
+            }
 
-        //Sound
-        _context.fillStyle = Life.Utils.rgbaToCss(agent.soundMultiplier, agent.soundMultiplier, agent.soundMultiplier, 1);
-        _context.fillRect(agent.pos.x + xo + 6, agent.pos.y + yo + 24, 5, 10);
+            //Herbivore-ness
+            _context.fillStyle = Life.Utils.rgbaToCss(1 - agent.herbivore, agent.herbivore, 0, 1);
+            _context.fillRect(agent.pos.x + xo + 6, agent.pos.y + yo + 12, 5, 10);
+
+            //Sound
+            _context.fillStyle = Life.Utils.rgbaToCss(agent.soundMultiplier, agent.soundMultiplier, agent.soundMultiplier, 1);
+            _context.fillRect(agent.pos.x + xo + 6, agent.pos.y + yo + 24, 5, 10);
 
 
-        //Text
-        _context.fillStyle = "black";
-        _context.fillText(agent.generationCount, agent.pos.x - _this.parameters.agent.radius, agent.pos.y + _this.parameters.agent.radius * 2);
-        _context.fillText(agent.age, agent.pos.x - _this.parameters.agent.radius, agent.pos.y + _this.parameters.agent.radius * 2 + 10);
-        _context.fillText(agent.health.toFixed(2), agent.pos.x - _this.parameters.agent.radius, agent.pos.y + _this.parameters.agent.radius * 2 + 20);
-        _context.fillText(agent.repCounter.toFixed(2), agent.pos.x - _this.parameters.agent.radius, agent.pos.y + _this.parameters.agent.radius * 2 + 30);
+            //Text
+            _context.fillStyle = "black";
+            _context.fillText(agent.generationCount, agent.pos.x - _this.parameters.agent.radius, agent.pos.y + _this.parameters.agent.radius * 2);
+            _context.fillText(agent.age, agent.pos.x - _this.parameters.agent.radius, agent.pos.y + _this.parameters.agent.radius * 2 + 10);
+            _context.fillText(agent.health.toFixed(2), agent.pos.x - _this.parameters.agent.radius, agent.pos.y + _this.parameters.agent.radius * 2 + 20);
+            _context.fillText(agent.repCounter.toFixed(2), agent.pos.x - _this.parameters.agent.radius, agent.pos.y + _this.parameters.agent.radius * 2 + 30);
+        }
     };
 
     /**
@@ -233,33 +351,19 @@ Life.Renderer = function (parameters) {
         _context.fillRect(x * _this.parameters.cellSize, y * _this.parameters.cellSize, _this.parameters.cellSize, _this.parameters.cellSize);
     };
 
-    /**
-     * Allows a callback to be attached to handle advanced rendering of data, e.g. for graphing
-     * @param callback Function to call when new simulation data is available
-     */
-    this.onUpdate = function (callback) {
-        _callback = callback;
-    };
+
 
     /**
      * Initialises a simulation and begins rendering
      */
     this.init = function () {
-        //Create a Web Worker
-        var worker = new Worker('Worker.js');
-        worker.onmessage = function (event) {
-            data = JSON.parse(event.data);
-            _world = data.world;
-            _selectedAgent = data.agent;
-            _callback(data);
-        };
-        //Initialise it
-        worker.postMessage({action:"init", parameters:_this.parameters});
+        _canvas.width = _simulation.parameters.width;
+        _canvas.height = _simulation.parameters.height;
 
-        //Pass click events to worker to select agent
-        _canvas.onclick = function (event) {
-            worker.postMessage({action:"select", x:event.x, y:event.y});
-        }
+        //Pass click events to simulation to select agent
+        _canvas.addEventListener("mousedown", function (event) {
+            _simulation.sendCommand("select", {x:event.clientX, y:event.clientY});
+        }, false);
 
         //requestAnimationFrame shim, lets unsupported browsers render, with poorer performance
         var lastTime = 0;
@@ -286,7 +390,29 @@ Life.Renderer = function (parameters) {
 
         //Begin animation
         this.animate();
+    };
+
+    this.update = function(world, selectedAgent){
+        _world = world;
+        _selectedAgent = selectedAgent;
     }
+
+
+    this.setParameters = function(parameters){
+        _simulation.sendCommand("setParameters", {parameters:parameters});
+    };
+
+    this.save = function(){
+        _simulation.sendCommand("save", {});
+    };
+
+    this.load = function(){
+        _simulation.sendCommand("load", {world:_this.saved});
+    };
+
+
+
+
 
 };
 
