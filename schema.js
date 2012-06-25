@@ -1,6 +1,10 @@
-var pg = require('pg');
+var pg = require('pg').native
+    , connectionString = process.env.DATABASE_URL
+    , client
+    , query;
 
-pg.connect(process.env.DATABASE_URL, function(err, client) {
-    var query = client.query('CREATE TABLE data (data text)');
+client = new pg.Client(connectionString);
+client.connect();
+
+ query = client.query('CREATE TABLE data (data text)');
     query.on('end', function() { client.end(); });
-});
