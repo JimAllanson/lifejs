@@ -5,17 +5,6 @@ sylvester.js
 *.iml
 client
 node
-node.exe
-nodemaster.html
-nodeslave.html
-package.json
-schema.js
-web.js
-nodeworker.js
-npm.cmd
-
-
-
 node_modules
 
 ############

@@ -1161,7 +1161,7 @@ function init(parameters) {
     _world = new Life.World(parameters);
     _selectedAgent = _world.agents[0];
     _world.agents[0].selectFlag = true;
-    setInterval(update, 30);
+    setInterval(update, 100);
     _timer = setInterval(tick, _world.parameters.tickDuration);
 }
 
@@ -1240,14 +1240,17 @@ function selectAgent(x, y) {
  var express = require('express');
 var app = express.createServer()
   , io = require('socket.io').listen(app);
-
-app.listen(80);
+var port = process.env.PORT || 3000;
+app.listen(port);
 io.set('log level', 1);
-
+io.configure(function () {
+    io.set("transports", ["xhr-polling"]);
+    io.set("polling duration", 10);
+});
 
 
 app.configure(function() {
-    app.use(express.static(__dirname + '/public'));
+    app.use(express.static(__dirname + '/client'));
     app.use(express.errorHandler({ dumpExceptions: true, showStack: true }));
 });
 
