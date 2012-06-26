@@ -140,10 +140,10 @@ Life.Simulation = function(parameters){
             });
 
             _socket.on('connected', function (data) {
-                _this.parameters = data.world.parameters;
+                _params = data.world.parameters;
                 _world = data.world;
                 _selectedAgent = data.agent;
-                _renderer.init();
+                _renderer.init(_params);
             });
 
         }else{
@@ -161,7 +161,7 @@ Life.Simulation = function(parameters){
                 }
             };
 
-            _renderer.init();
+            _renderer.init(_params);
         }
         if(options && options.slave){
             _this.sendCommand("listen");
