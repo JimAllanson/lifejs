@@ -91,17 +91,15 @@ Life.World = function (parameters) {
                 for (var id2 in agentsAround) {
                     var agent2 = agentsAround[id2];
                     if (agent2.health > 0) {
-                        if (agent.pos.distanceFrom(agent2.pos) < _this.parameters.agent.bodyDecayRadius) {
-                            agent2.health += 5 * (1 - agent2.herbivore) * (1 - agent2.herbivore) / Math.pow(agentsAround.length, 1.25) * ageMultiplier;
-                            agent2.repCounter -= _this.parameters.agent.bodyFertilityBonus * (1 - agent.herbivore) * (1 - agent.herbivore) / Math.pow(agentsAround.length, 1.25) * ageMultiplier;
-                            if (agent2.health > 2) agent2.health = 2;
-                            agent2.indicator = {
-                                size:30,
-                                red:1,
-                                green:1,
-                                blue:1
-                            };
-                        }
+                        agent2.health += 5 * (1 - agent2.herbivore) * (1 - agent2.herbivore) / Math.pow(agentsAround.length, 1.25) * ageMultiplier;
+                        agent2.repCounter -= _this.parameters.agent.bodyFertilityBonus * (1 - agent.herbivore) * (1 - agent.herbivore) / Math.pow(agentsAround.length, 1.25) * ageMultiplier;
+                        if (agent2.health > 2) agent2.health = 2;
+                        agent2.indicator = {
+                            size:30,
+                            red:0.8,
+                            green:1,
+                            blue:0.8
+                        };
                     }
                 }
             }
@@ -357,22 +355,16 @@ Life.World = function (parameters) {
                 for (var id2 in _this.agents) {
                     var agent2 = _this.agents[id2];
                     if (agent == agent2) continue;
-                    var distance = Math.sqrt(Math.pow(Math.abs(agent.pos.x - agent2.pos.x),2) + Math.pow(agent.pos.y - agent2.pos.y, 2));
 
                     //Agent is within stabbing range
-                    if (distance < _this.parameters.agent.radius * 2) {
-                        //var v = $V([1, 0]);
-                        //v = v.rotate(agent.angle, [0, 0]);
-                        //var diff = v.angleFrom(agent2.pos.subtract(agent.pos));
-                        var diff = Math.abs(Math.atan2(agent2.pos.y - agent.pos.y, agent2.pos.x - agent.pos.x));
-                        if (Math.abs(diff) < Math.PI / 8) {
+                    if (agent.pos.distanceFrom(agent2.pos) < _this.parameters.agent.radius * 2) {
+                        var diff = Math.min((2*Math.PI)-Math.abs(agent.angle - agent.pos.angleFromNorth(agent2.pos)), Math.abs(agent.angle - agent.pos.angleFromNorth(agent2.pos)));
+                        if (diff < Math.PI / 8) {
                             var speedMultiplier = agent.sprinting ? _this.parameters.agent.sprintMultiplier : 1;
-                            var damage = _this.parameters.agent.spikeStrength * agent.spikeLength * Math.max(Math.abs(agent.wheel1), Math.abs(agent.wheel2)) * _this.parameters.agent.sprintMultiplier;
+                            var damage = _this.parameters.agent.spikeStrength * agent.spikeLength * Math.max(Math.abs(agent.wheel1), Math.abs(agent.wheel2)) * speedMultiplier;
                             agent2.health -= damage;
 
-                            if (agent.health > 2) agent.health = 2;
                             agent.spikeLength = 0;
-
                             agent.indicator = {
                                 size:40 * damage,
                                 red:1,
@@ -380,10 +372,8 @@ Life.World = function (parameters) {
                                 blue:0
                             };
 
-                            //var v2 = $V([1, 0]);
-                            //v2 = v2.rotate(agent2.angle, [0, 0]);
-                            //var adiff = v.angleFrom(v2);
-                            if (Math.abs(agent2.angle - agent.angle) < Math.PI / 2) {
+                            var behind = agent2.angle + Math.PI > 2* Math.PI ? (agent2.angle + Math.PI) - 2*Math.PI  : agent2.angle + Math.PI;
+                            if (Math.abs(behind - agent2.pos.angleFromNorth(agent.pos)) < Math.PI / 2) {
                                 agent2.spikeLength = 0;
                             }
                             agent2.spiked = true;
@@ -596,7 +586,7 @@ Life.Agent = function (parameters) {
     for (var i = 0; i < _parameters.agent.numberEyes; i++) {
         var eye = new Life.Agent.Eye(_this);
         eye.fov = Math.random() * 1.5 + 0.5;
-        eye.direction = Math.random() * Math.PI * 2;
+        eye.direction = i * (Math.PI / 2);
         _this.eyes.push(eye);
     }
 
@@ -645,17 +635,14 @@ Life.Agent = function (parameters) {
 
         //Copy mutation rate from parent, randomised using normal distribution with sigma value from _parameters
         agent.mutationRate = _this.mutationRate;
-        if (Math.random() < 0.1) agent.mutationRate[0] = Life.Utils.randomNormal(_this.mutationRate[0], _parameters.mutationRate[0]);
-        if (Math.random() < 0.1) agent.mutationRate[1] = Life.Utils.randomNormal(_this.mutationRate[1], _parameters.mutationRate[1]);
-        if (_this.mutationRate[0] < 0.001) _this.mutationRate[0] = 0.001;
-        if (_this.mutationRate[1] < 0.02) _this.mutationRate[1] = 0.02;
+
 
         //Randomise food preference and body clocks from parent's values and mutation rate
-        agent.herbivore = Life.Utils.cap(Life.Utils.randomNormal(_this.herbivore, 0.03));
-        if (Math.random() < _this.mutationRate[0] * 5) agent.clock1 = Life.Utils.randomNormal(agent.clock1, _this.mutationRate[1]);
-        if (agent.clock1 < 2) agent.clock1 = 2;
-        if (Math.random() < _this.mutationRate[0] * 5) agent.clock2 = Life.Utils.randomNormal(agent.clock2, _this.mutationRate[1]);
-        if (agent.clock2 < 2) agent.clock2 = 2;
+        agent.herbivore = _this.herbivore;
+        agent.clock1 = _this.clock1;
+        agent.clock2 = _this.clock2;
+        
+        
 
         //Copy senses from parent
         agent.smellModifier = _this.smellModifier;
@@ -667,7 +654,7 @@ Life.Agent = function (parameters) {
         //Copy eyes
         agent.eyes = _this.eyes;
 
-        agent.temperaturePreference = Life.Utils.cap(Life.Utils.randomNormal(_this.temperaturePreference, 0.005));
+        agent.temperaturePreference = _this.temperaturePreference;
         agent.brain = _this.brain;
         agent.mutate();
 
@@ -678,28 +665,45 @@ Life.Agent = function (parameters) {
      * Performs mutations on the current agent and its brain.
      */
     this.mutate = function () {
+        //Mutate mutation rate
+        if (Math.random() < 0.1) _this.mutationRate[0] = Life.Utils.randomNormal(_this.mutationRate[0], _parameters.mutationRate[0]);
+        if (Math.random() < 0.1) _this.mutationRate[1] = Life.Utils.randomNormal(_this.mutationRate[1], _parameters.mutationRate[1]);
+        if (_this.mutationRate[0] < 0.001) _this.mutationRate[0] = 0.001;
+        if (_this.mutationRate[1] < 0.02) _this.mutationRate[1] = 0.02;
+
+
         //Low probability of increased mutation rates
-        var mutationRate1 = Math.random() < 0.04 ? _this.mutationRate[0] *= Math.random() * 10 : _this.mutationRate[0];
-        var mutationRate2 = Math.random() < 0.04 ? _this.mutationRate[1] *= Math.random() * 10 : _this.mutationRate[1];
+        //var mutationRate1 = Math.random() < 0.04 ? _this.mutationRate[0] *= Math.random() * 10 : _this.mutationRate[0];
+        //var mutationRate2 = Math.random() < 0.04 ? _this.mutationRate[1] *= Math.random() * 10 : _this.mutationRate[1];
+
+        //Mutate Herbivore-ness
+        _this.herbivore = Life.Utils.cap(Life.Utils.randomNormal(_this.herbivore, 0.03));
+        
+        //Mutate clocks
+        if (Math.random() < _this.mutationRate[0] * 5) _this.clock1 = Life.Utils.randomNormal(_this.clock1, _this.mutationRate[1]);
+        if (_this.clock1 < 2) _this.clock1 = 2;
+        if (Math.random() < _this.mutationRate[0] * 5) _this.clock2 = Life.Utils.randomNormal(_this.clock2, _this.mutationRate[1]);
+        if (_this.clock2 < 2) _this.clock2 = 2;
 
         //Mutate senses
-        if (Math.random() < mutationRate1 * 5) _this.smellModifier = Life.Utils.randomNormal(_this.smellModifier, mutationRate2);
-        if (Math.random() < mutationRate1 * 5) _this.soundModifier = Life.Utils.randomNormal(_this.soundModifier, mutationRate2);
-        if (Math.random() < mutationRate1 * 5) _this.hearingModifier = Life.Utils.randomNormal(_this.hearingModifier, mutationRate2);
-        if (Math.random() < mutationRate1 * 5) _this.eyeSenseModifier = Life.Utils.randomNormal(_this.eyeSenseModifier, mutationRate2);
-        if (Math.random() < mutationRate1 * 5) _this.bloodModifier = Life.Utils.randomNormal(_this.bloodModifier, mutationRate2);
+        if (Math.random() < _this.mutationRate[0] * 5) _this.smellModifier = Life.Utils.randomNormal(_this.smellModifier, _this.mutationRate[1]);
+        if (Math.random() < _this.mutationRate[0] * 5) _this.soundModifier = Life.Utils.randomNormal(_this.soundModifier, _this.mutationRate[1]);
+        if (Math.random() < _this.mutationRate[0] * 5) _this.hearingModifier = Life.Utils.randomNormal(_this.hearingModifier, _this.mutationRate[1]);
+        if (Math.random() < _this.mutationRate[0] * 5) _this.eyeSenseModifier = Life.Utils.randomNormal(_this.eyeSenseModifier, _this.mutationRate[1]);
+        if (Math.random() < _this.mutationRate[0] * 5) _this.bloodModifier = Life.Utils.randomNormal(_this.bloodModifier, _this.mutationRate[1]);
+
+        //Mutate Temperature preference
+        _this.temperaturePreference = Life.Utils.cap(Life.Utils.randomNormal(_this.temperaturePreference, 0.005));
 
         for(var i in _this.eyes){
             var eye = _this.eyes[i];
-            if (Math.random() < mutationRate1 * 5) eye.fov = Life.Utils.randomNormal(eye.fov, mutationRate2);
-            if (Math.random() < mutationRate1 * 5) eye.direction = Life.Utils.randomNormal(eye.direction, mutationRate2);
+            if (Math.random() < _this.mutationRate[0] * 5) eye.fov = Life.Utils.randomNormal(eye.fov, _this.mutationRate[1]);
+            if (Math.random() < _this.mutationRate[0] * 5) eye.direction = Life.Utils.randomNormal(eye.direction, _this.mutationRate[1]);
             if (eye.fov < 0.5) eye.fov = 0.5;
             if (eye.fov > 2) eye.fov = 2;
-            if (eye.direction < 0) eye.direction = 0;
-            if (eye.direction > 2 * Math.PI) eye.direction = 2 * Math.PI;
         }
 
-        _this.brain.mutate(mutationRate1, mutationRate2);
+        _this.brain.mutate(_this.mutationRate[0], _this.mutationRate[1]);
     };
 
     /**
@@ -906,12 +910,12 @@ Life.Brain = function (parameters) {
             }
 
             if (Math.random() < mutationRate1) {
-                var rc = Math.round(Math.random() * _parameters.brain.connections);
+                var rc = Math.round(Math.random() *( _parameters.brain.connections - 1));
                 _this.boxes[i].weight[rc] += Life.Utils.randomNormal(0, mutationRate2);
             }
 
             if (Math.random() < mutationRate1) {
-                var rc = Math.round(Math.random() * _parameters.brain.connections);
+                var rc = Math.round(Math.random() * (_parameters.brain.connections - 1));
                 _this.boxes[i].type[rc] = 1 - _this.boxes[i].type[rc];
             }
 
@@ -1056,8 +1060,16 @@ Life.Utils.cap = function (x) {
  * @return {Number} A random number
  */
 Life.Utils.randomNormal = function (mean, variance) {
-    return ((Math.random() * 2 - 1) + (Math.random() * 2 - 1) + (Math.random() * 2 - 1)) * variance + mean;
+    var variable1, variable2, squared, result;
+    do {
+        variable1 = 2 * Math.random() - 1;
+        variable2 = 2 * Math.random() - 1;
+        squared = variable1 * variable1 + variable2 * variable2;
+    } while (squared > 1 || squared==0);
+
+    return Math.sqrt(-2 * Math.log(squared) / squared) * variable1 * Math.sqrt(variance) + mean;
 };
+
 /**
  * Produces an RGBA CSS string from four values between 0 and 1.
  * @param r Red component

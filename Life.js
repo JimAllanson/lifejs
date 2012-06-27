@@ -13,7 +13,7 @@ Life.Simulation = function(parameters){
 
         //Vegetation distribution
         maxFood:0.5,
-        foodAddFrequency:15,
+        foodAddFrequency:30,
 
         minAgents:25,
         maxAgents:50,
@@ -53,7 +53,7 @@ Life.Simulation = function(parameters){
             temperatureDiscomfortDamage:0,
 
             //Death
-            bodyDecayRadius:100,
+            bodyDecayRadius:64,
             bodyFertilityBonus:5
         },
 
